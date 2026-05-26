@@ -51,8 +51,8 @@ public class BlockScanner {
                 int maxChunkZ = max.getZ() >> 4;
 
                 int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
-                if (chunkCount > 1024) {
-                    throw new IllegalArgumentException("Selection covers " + chunkCount + " chunks, exceeding the safety limit of 1024 chunks (~512x512 blocks). Please make a smaller selection.");
+                if (chunkCount > 4096) {
+                    throw new IllegalArgumentException("Selection covers " + chunkCount + " chunks, exceeding the safety limit of 4096 chunks (~1024x1024 blocks). Please make a smaller selection.");
                 }
 
                 for (int cx = minChunkX; cx <= maxChunkX; cx++) {
@@ -253,8 +253,8 @@ public class BlockScanner {
                     int maxChunkZ = max.getZ() >> 4;
 
                     int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
-                    if (chunkCount > 1024) {
-                        throw new IllegalArgumentException("Selection covers too many chunks to scan safely");
+                    if (chunkCount > 4096) {
+                        throw new IllegalArgumentException("Selection covers too many chunks to scan safely (max: 4096)");
                     }
 
                     for (int cx = minChunkX; cx <= maxChunkX; cx++) {
