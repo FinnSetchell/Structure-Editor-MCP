@@ -1,0 +1,22 @@
+{
+    "schemaVersion": 1,
+    "id": "structure_editor",
+    "version": "${version}",
+    "name": "Structure Editor",
+    "description": "MCP bridge for reading and editing jigsaw and structure block data in-world.",
+    "authors": ["finndog"],
+    "contact": {},
+    "license": "MIT",
+    "environment": "*",
+    "entrypoints": {
+        "main": [
+            "com.finndog.structure_editor.StructureEditorMod"
+        ]
+    },
+    "mixins": [],
+    "depends": {
+        "fabricloader": ">=0.19.0",
+        "fabric-api": "*",
+        "minecraft": "~1.21.10"
+    }
+}
