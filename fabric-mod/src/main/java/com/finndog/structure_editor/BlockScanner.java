@@ -141,8 +141,8 @@ public class BlockScanner {
                     return;
                 }
 
-                // Read current NBT, apply field overrides, write back
-                NbtCompound nbt = be.createNbt(registries);
+                // Read current NBT including block entity ID and position tags, apply overrides, write back
+                NbtCompound nbt = be.createNbtWithIdentifyingData(registries);
 
                 for(String key : fields.keySet()) {
                     JsonElement val = fields.get(key);
