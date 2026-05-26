@@ -56,7 +56,7 @@ public class BlockScanner {
 
                 for (int cx = minChunkX; cx <= maxChunkX; cx++) {
                     for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
-                        WorldChunk chunk = world.getChunkManager().getWorldChunk(cx, cz, true);
+                        WorldChunk chunk = world.getChunk(cx, cz);
                         if (chunk != null) {
                             for (Map.Entry<BlockPos, BlockEntity> entry : chunk.getBlockEntities().entrySet()) {
                                 BlockPos pos = entry.getKey();
@@ -123,7 +123,7 @@ public class BlockScanner {
                 RegistryWrapper.WrapperLookup registries = server.getRegistryManager();
                 
                 // Force load the chunk at the specific position before checking the block entity
-                world.getChunkManager().getWorldChunk(pos.getX() >> 4, pos.getZ() >> 4, true);
+                world.getChunk(pos.getX() >> 4, pos.getZ() >> 4);
                 
                 BlockEntity be = world.getBlockEntity(pos);
 
@@ -216,7 +216,7 @@ public class BlockScanner {
                     int z = request.get("z").getAsInt();
                     BlockPos pos = new BlockPos(x, y, z);
                     
-                    world.getChunkManager().getWorldChunk(pos.getX() >> 4, pos.getZ() >> 4, true);
+                    world.getChunk(pos.getX() >> 4, pos.getZ() >> 4);
                     BlockEntity be = world.getBlockEntity(pos);
 
                     if (be instanceof StructureBlockBlockEntity structBlock) {
@@ -259,7 +259,7 @@ public class BlockScanner {
 
                     for (int cx = minChunkX; cx <= maxChunkX; cx++) {
                         for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
-                            WorldChunk chunk = world.getChunkManager().getWorldChunk(cx, cz, true);
+                            WorldChunk chunk = world.getChunk(cx, cz);
                             if (chunk != null) {
                                 for (Map.Entry<BlockPos, BlockEntity> entry : chunk.getBlockEntities().entrySet()) {
                                     BlockPos pos = entry.getKey();
