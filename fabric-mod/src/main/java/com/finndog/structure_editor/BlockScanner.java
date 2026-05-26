@@ -12,6 +12,7 @@ import net.minecraft.util.math.BlockPos;
 
 import net.minecraft.world.chunk.WorldChunk;
 import java.util.Map;
+import java.util.Set;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -58,13 +59,12 @@ public class BlockScanner {
                     for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
                         WorldChunk chunk = world.getChunk(cx, cz);
                         if (chunk != null) {
-                            for (Map.Entry<BlockPos, BlockEntity> entry : chunk.getBlockEntities().entrySet()) {
-                                BlockPos pos = entry.getKey();
+                            for (BlockPos pos : chunk.getBlockEntityPositions()) {
                                 if (pos.getX() >= min.getX() && pos.getX() <= max.getX() &&
                                     pos.getY() >= min.getY() && pos.getY() <= max.getY() &&
                                     pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ()) {
                                     
-                                    BlockEntity be = entry.getValue();
+                                    BlockEntity be = chunk.getBlockEntity(pos);
                                     if (be instanceof JigsawBlockEntity jigsaw) {
                                         results.add(jigsawToJson(jigsaw, pos, registries));
                                     } else if (be instanceof StructureBlockBlockEntity structBlock) {
@@ -260,14 +260,13 @@ public class BlockScanner {
                     for (int cx = minChunkX; cx <= maxChunkX; cx++) {
                         for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
                             WorldChunk chunk = world.getChunk(cx, cz);
-                            if (chunk != null) {
-                                for (Map.Entry<BlockPos, BlockEntity> entry : chunk.getBlockEntities().entrySet()) {
-                                    BlockPos pos = entry.getKey();
+                             if (chunk != null) {
+                                for (BlockPos pos : chunk.getBlockEntityPositions()) {
                                     if (pos.getX() >= min.getX() && pos.getX() <= max.getX() &&
                                         pos.getY() >= min.getY() && pos.getY() <= max.getY() &&
                                         pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ()) {
                                         
-                                        BlockEntity be = entry.getValue();
+                                        BlockEntity be = chunk.getBlockEntity(pos);
                                         if (be instanceof StructureBlockBlockEntity structBlock) {
                                             boolean success = structBlock.saveStructure();
                                             JsonObject item = new JsonObject();
