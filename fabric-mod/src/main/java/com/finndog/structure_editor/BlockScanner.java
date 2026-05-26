@@ -154,6 +154,9 @@ public class BlockScanner {
                     world.removeBlockEntity(pos);
                     world.addBlockEntity(newBe);
                     newBe.markDirty();
+                    world.getChunkManager().markForUpdate(pos);
+                } else {
+                    StructureEditorMod.LOGGER.error("Failed to recreate block entity from NBT at {}", pos.toShortString());
                 }
 
                 // Send block entity update to all players watching
