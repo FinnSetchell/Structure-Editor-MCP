@@ -77,7 +77,10 @@ public class StructureEditorMod implements ModInitializer {
             if(player.getMainHandStack().getItem() != Items.STICK) return ActionResult.PASS;
 
             BlockPos pos = hitResult.getBlockPos();
-            httpServer.getSelection().setPos2(pos);
+            SelectionManager sel = httpServer.getSelection();
+            if(pos.equals(sel.getPos2())) return ActionResult.FAIL;
+
+            sel.setPos2(pos);
             sp.sendMessage(Text.literal("[StructureEditor] pos2 set: " + pos.toShortString()), false);
             return ActionResult.SUCCESS;
         });
@@ -88,7 +91,10 @@ public class StructureEditorMod implements ModInitializer {
             if(!(player instanceof ServerPlayerEntity sp)) return ActionResult.PASS;
             if(player.getMainHandStack().getItem() != Items.STICK) return ActionResult.PASS;
 
-            httpServer.getSelection().setPos1(pos);
+            SelectionManager sel = httpServer.getSelection();
+            if(pos.equals(sel.getPos1())) return ActionResult.FAIL;
+
+            sel.setPos1(pos);
             sp.sendMessage(Text.literal("[StructureEditor] pos1 set: " + pos.toShortString()), false);
             return ActionResult.SUCCESS;
         });

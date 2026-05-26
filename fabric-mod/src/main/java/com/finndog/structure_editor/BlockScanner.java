@@ -10,6 +10,8 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
 
+import net.minecraft.world.chunk.WorldChunk;
+import java.util.Map;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -42,15 +44,37 @@ public class BlockScanner {
                 ServerWorld world = server.getOverworld();
                 RegistryWrapper.WrapperLookup registries = server.getRegistryManager();
 
-                BlockPos.iterate(min, max).forEach(pos -> {
-                    BlockEntity be = world.getBlockEntity(pos);
-                    if(be instanceof JigsawBlockEntity jigsaw) {
-                        results.add(jigsawToJson(jigsaw, pos, registries));
+                int minChunkX = min.getX() >> 4;
+                int maxChunkX = max.getX() >> 4;
+                int minChunkZ = min.getZ() >> 4;
+                int maxChunkZ = max.getZ() >> 4;
+
+                int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
+                if (chunkCount > 1024) {
+                    throw new IllegalArgumentException("Selection covers " + chunkCount + " chunks, exceeding the safety limit of 1024 chunks (~512x512 blocks). Please make a smaller selection.");
+                }
+
+                for (int cx = minChunkX; cx <= maxChunkX; cx++) {
+                    for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
+                        WorldChunk chunk = world.getChunkManager().getWorldChunk(cx, cz, true);
+                        if (chunk != null) {
+                            for (Map.Entry<BlockPos, BlockEntity> entry : chunk.getBlockEntities().entrySet()) {
+                                BlockPos pos = entry.getKey();
+                                if (pos.getX() >= min.getX() && pos.getX() <= max.getX() &&
+                                    pos.getY() >= min.getY() && pos.getY() <= max.getY() &&
+                                    pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ()) {
+                                    
+                                    BlockEntity be = entry.getValue();
+                                    if (be instanceof JigsawBlockEntity jigsaw) {
+                                        results.add(jigsawToJson(jigsaw, pos, registries));
+                                    } else if (be instanceof StructureBlockBlockEntity structBlock) {
+                                        results.add(structureBlockToJson(structBlock, pos, registries));
+                                    }
+                                }
+                            }
+                        }
                     }
-                    else if(be instanceof StructureBlockBlockEntity structBlock) {
-                        results.add(structureBlockToJson(structBlock, pos, registries));
-                    }
-                });
+                }
 
                 future.complete(results);
             } catch(Exception e) {
@@ -97,6 +121,10 @@ public class BlockScanner {
             try {
                 ServerWorld world = server.getOverworld();
                 RegistryWrapper.WrapperLookup registries = server.getRegistryManager();
+                
+                // Force load the chunk at the specific position before checking the block entity
+                world.getChunkManager().getWorldChunk(pos.getX() >> 4, pos.getZ() >> 4, true);
+                
                 BlockEntity be = world.getBlockEntity(pos);
 
                 if(be == null) {
