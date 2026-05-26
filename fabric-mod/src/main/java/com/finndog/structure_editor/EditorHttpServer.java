@@ -39,6 +39,7 @@ public class EditorHttpServer {
             server.createContext("/scan",      new ScanHandler());
             server.createContext("/edit",      new EditHandler());
             server.createContext("/batch",     new BatchHandler());
+            server.createContext("/save",      new SaveHandler());
             server.setExecutor(Executors.newFixedThreadPool(4));
             server.start();
             StructureEditorMod.LOGGER.info("Structure Editor HTTP server started on http://{}:{}", config.host, config.port);
@@ -236,6 +237,26 @@ public class EditorHttpServer {
             try {
                 JsonArray body = JsonParser.parseString(readBody(exchange)).getAsJsonArray();
                 String result = BlockScanner.editBatch(mcServer, body);
+                sendJson(exchange, 200, result);
+            } catch(Exception e) {
+                sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
+            }
+        }
+    }
+
+    class SaveHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if(!"POST".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            try {
+                String bodyStr = readBody(exchange);
+                JsonObject body = bodyStr.trim().isEmpty() ? new JsonObject() : JsonParser.parseString(bodyStr).getAsJsonObject();
+                String result = BlockScanner.saveStructures(mcServer, selection, body);
                 sendJson(exchange, 200, result);
             } catch(Exception e) {
                 sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));

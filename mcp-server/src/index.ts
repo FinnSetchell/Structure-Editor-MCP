@@ -277,6 +277,30 @@ Returns a summary of what changed.`,
     }
 );
 
+// --- save structures ---
+
+server.tool(
+    "save_structures",
+    `Trigger the 'Save' operation on all structure blocks in the selection region (or a specific structure block at x,y,z coordinates).
+This writes the structure block's contents to the server's template files (.nbt).
+Provide x, y, and z to only trigger a specific structure block. Leave them out to save all structure blocks inside your selection region.`,
+    {
+        x: z.number().int().optional().describe("Optional X coordinate of the structure block to save"),
+        y: z.number().int().optional().describe("Optional Y coordinate of the structure block to save"),
+        z: z.number().int().optional().describe("Optional Z coordinate of the structure block to save"),
+    },
+    async ({ x, y, z: zCoord }) => {
+        const body: Record<string, number> = {};
+        if (x !== undefined && y !== undefined && zCoord !== undefined) {
+            body.x = x;
+            body.y = y;
+            body.z = zCoord;
+        }
+        const data = await modPost("/save", body);
+        return textResult(data);
+    }
+);
+
 //////////////////////////////
 // Start
 //////////////////////////////

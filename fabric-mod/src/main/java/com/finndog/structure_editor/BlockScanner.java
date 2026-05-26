@@ -197,6 +197,112 @@ public class BlockScanner {
         return GSON.toJson(wrapper);
     }
 
+    // Triggers the save operation on structure blocks in selection or at coordinates
+    public static String saveStructures(MinecraftServer server, SelectionManager selection, JsonObject request) {
+        CompletableFuture<JsonObject> future = new CompletableFuture<>();
+
+        server.execute(() -> {
+            try {
+                JsonObject result = new JsonObject();
+                JsonArray savedList = new JsonArray();
+                ServerWorld world = server.getOverworld();
+
+                if (request.has("x") && request.has("y") && request.has("z")) {
+                    int x = request.get("x").getAsInt();
+                    int y = request.get("y").getAsInt();
+                    int z = request.get("z").getAsInt();
+                    BlockPos pos = new BlockPos(x, y, z);
+                    
+                    world.getChunkManager().getWorldChunk(pos.getX() >> 4, pos.getZ() >> 4, true);
+                    BlockEntity be = world.getBlockEntity(pos);
+
+                    if (be instanceof StructureBlockBlockEntity structBlock) {
+                        boolean success = structBlock.saveStructure();
+                        JsonObject item = new JsonObject();
+                        item.addProperty("x", pos.getX());
+                        item.addProperty("y", pos.getY());
+                        item.addProperty("z", pos.getZ());
+                        
+                        NbtCompound nbt = structBlock.createNbt(server.getRegistryManager());
+                        String name = nbt.getString("name").orElse("");
+                        item.addProperty("name", name);
+                        
+                        item.addProperty("success", success);
+                        savedList.add(item);
+                    } else {
+                        result.addProperty("error", "Block at " + pos.toShortString() + " is not a structure block");
+                        future.complete(result);
+                        return;
+                    }
+                } else {
+                    if (!selection.isComplete()) {
+                        result.addProperty("error", "No complete selection active");
+                        future.complete(result);
+                        return;
+                    }
+
+                    BlockPos min = selection.getMin();
+                    BlockPos max = selection.getMax();
+
+                    int minChunkX = min.getX() >> 4;
+                    int maxChunkX = max.getX() >> 4;
+                    int minChunkZ = min.getZ() >> 4;
+                    int maxChunkZ = max.getZ() >> 4;
+
+                    int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
+                    if (chunkCount > 1024) {
+                        throw new IllegalArgumentException("Selection covers too many chunks to scan safely");
+                    }
+
+                    for (int cx = minChunkX; cx <= maxChunkX; cx++) {
+                        for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
+                            WorldChunk chunk = world.getChunkManager().getWorldChunk(cx, cz, true);
+                            if (chunk != null) {
+                                for (Map.Entry<BlockPos, BlockEntity> entry : chunk.getBlockEntities().entrySet()) {
+                                    BlockPos pos = entry.getKey();
+                                    if (pos.getX() >= min.getX() && pos.getX() <= max.getX() &&
+                                        pos.getY() >= min.getY() && pos.getY() <= max.getY() &&
+                                        pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ()) {
+                                        
+                                        BlockEntity be = entry.getValue();
+                                        if (be instanceof StructureBlockBlockEntity structBlock) {
+                                            boolean success = structBlock.saveStructure();
+                                            JsonObject item = new JsonObject();
+                                            item.addProperty("x", pos.getX());
+                                            item.addProperty("y", pos.getY());
+                                            item.addProperty("z", pos.getZ());
+                                            
+                                            NbtCompound nbt = structBlock.createNbt(server.getRegistryManager());
+                                            String name = nbt.getString("name").orElse("");
+                                            item.addProperty("name", name);
+                                            
+                                            item.addProperty("success", success);
+                                            savedList.add(item);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                result.addProperty("count", savedList.size());
+                result.add("results", savedList);
+                future.complete(result);
+            } catch (Exception e) {
+                future.completeExceptionally(e);
+            }
+        });
+
+        try {
+            return GSON.toJson(future.get(10, TimeUnit.SECONDS));
+        } catch (Exception e) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+            return GSON.toJson(err);
+        }
+    }
+
     //////////////////////////////
 
     private static JsonObject jigsawToJson(JigsawBlockEntity jigsaw, BlockPos pos, RegistryWrapper.WrapperLookup registries) {
