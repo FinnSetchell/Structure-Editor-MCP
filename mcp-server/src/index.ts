@@ -2,6 +2,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import * as fs from "fs";
+import * as path from "path";
 
 // The mod URL and optional API key are read from environment variables.
 const MOD_URL = process.env.MC_SERVER_URL || "http://127.0.0.1:25580";
@@ -298,6 +300,69 @@ Provide x, y, and z to only trigger a specific structure block. Leave them out t
         }
         const data = await modPost("/save", body);
         return textResult(data);
+    }
+);
+
+// --- download structure ---
+
+server.tool(
+    "download_structure",
+    `Download a saved structure block's NBT template file from the remote Minecraft server to your local machine.
+Provides seamless synchronization of your building templates without needing SFTP/BisectHosting panels.`,
+    {
+        structure_name: z.string().describe("The structure name, including namespace (e.g. 'mns:mega_fortress/intact/upper/small_junction_2')"),
+        local_dir: z.string().describe("The local absolute directory path where the structure .nbt file should be saved"),
+    },
+    async ({ structure_name, local_dir }) => {
+        try {
+            if (!fs.existsSync(local_dir)) {
+                return textResult({ error: `Local directory does not exist: ${local_dir}` });
+            }
+
+            const url = `${MOD_URL}/download?name=${encodeURIComponent(structure_name)}`;
+            const headers: Record<string, string> = {};
+            if (API_KEY) {
+                headers["Authorization"] = `Bearer ${API_KEY}`;
+            }
+
+            const res = await fetch(url, { headers });
+            if (!res.ok) {
+                const errText = await res.text();
+                throw new Error(`HTTP ${res.status} from mod: ${errText}`);
+            }
+
+            const arrayBuffer = await res.arrayBuffer();
+            const buffer = Buffer.from(arrayBuffer);
+
+            let namespace = "minecraft";
+            let structurePath = structure_name;
+            if (structure_name.includes(":")) {
+                const parts = structure_name.split(":", 2);
+                namespace = parts[0];
+                structurePath = parts[1];
+            }
+
+            // In Minecraft 1.21+, the datapack folder structure has transitioned to singular folder names (e.g. "structure" instead of "structures").
+            // Saving structures directly into <local_dir>/<namespace>/structure/<path>.nbt.
+            const relativePath = path.join(namespace, "structure", `${structurePath}.nbt`);
+            const fullLocalPath = path.join(local_dir, relativePath);
+
+            const targetSubDir = path.dirname(fullLocalPath);
+            if (!fs.existsSync(targetSubDir)) {
+                fs.mkdirSync(targetSubDir, { recursive: true });
+            }
+
+            fs.writeFileSync(fullLocalPath, buffer);
+
+            return textResult({
+                success: true,
+                message: `Structure '${structure_name}' successfully downloaded locally.`,
+                saved_path: fullLocalPath,
+                size_bytes: buffer.length,
+            });
+        } catch (e) {
+            return textResult({ error: `Download failed: ${String(e)}` });
+        }
     }
 );
 

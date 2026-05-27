@@ -40,6 +40,7 @@ public class EditorHttpServer {
             server.createContext("/edit",      new EditHandler());
             server.createContext("/batch",     new BatchHandler());
             server.createContext("/save",      new SaveHandler());
+            server.createContext("/download",  new DownloadHandler());
             server.setExecutor(Executors.newFixedThreadPool(4));
             server.start();
             StructureEditorMod.LOGGER.info("Structure Editor HTTP server started on http://{}:{}", config.host, config.port);
@@ -260,6 +261,70 @@ public class EditorHttpServer {
                 sendJson(exchange, 200, result);
             } catch(Exception e) {
                 sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
+            }
+        }
+    }
+
+    class DownloadHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if(!"GET".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+
+            try {
+                String query = exchange.getRequestURI().getQuery();
+                String nameParam = null;
+                if(query != null) {
+                    for(String param : query.split("&")) {
+                        String[] pair = param.split("=");
+                        if(pair.length > 1 && "name".equals(pair[0])) {
+                            nameParam = java.net.URLDecoder.decode(pair[1], StandardCharsets.UTF_8);
+                            break;
+                        }
+                    }
+                }
+
+                if(nameParam == null || nameParam.trim().isEmpty()) {
+                    JsonObject err = new JsonObject();
+                    err.addProperty("error", "Missing 'name' query parameter");
+                    sendJson(exchange, 400, GSON.toJson(err));
+                    return;
+                }
+
+                String namespace = "minecraft";
+                String path = nameParam;
+                if(nameParam.contains(":")) {
+                    String[] parts = nameParam.split(":", 2);
+                    namespace = parts[0];
+                    path = parts[1];
+                }
+
+                java.nio.file.Path generatedDir = mcServer.getSavePath(net.minecraft.util.WorldSavePath.GENERATED);
+                java.nio.file.Path file = generatedDir.resolve(namespace).resolve("structures").resolve(path + ".nbt");
+
+                if(!java.nio.file.Files.exists(file) || java.nio.file.Files.isDirectory(file)) {
+                    JsonObject err = new JsonObject();
+                    err.addProperty("error", "Structure file not found: " + nameParam);
+                    sendJson(exchange, 404, GSON.toJson(err));
+                    return;
+                }
+
+                byte[] bytes = java.nio.file.Files.readAllBytes(file);
+                exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
+                exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"" + path.substring(path.lastIndexOf('/') + 1) + ".nbt\"");
+                exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+                exchange.sendResponseHeaders(200, bytes.length);
+                try(OutputStream os = exchange.getResponseBody()) {
+                    os.write(bytes);
+                }
+            } catch(Exception e) {
+                JsonObject err = new JsonObject();
+                err.addProperty("error", "Download failed: " + e.getMessage());
+                sendJson(exchange, 500, GSON.toJson(err));
             }
         }
     }
