@@ -45,6 +45,9 @@ public class EditorHttpServer {
             server.createContext("/download",  new DownloadHandler());
             server.createContext("/container", new ContainerHandler());
             server.createContext("/container/batch", new BatchContainerHandler());
+            server.createContext("/scan/blocks", new BlockScanHandler());
+            server.createContext("/scan/entities", new EntityScanHandler());
+            server.createContext("/structure/palette", new StructurePaletteHandler());
             server.setExecutor(Executors.newFixedThreadPool(4));
             server.start();
             StructureEditorMod.LOGGER.info("Structure Editor HTTP server started on http://{}:{}", config.host, config.port);
@@ -464,6 +467,73 @@ public class EditorHttpServer {
             } catch(Exception e) {
                 sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
             }
+        }
+    }
+
+    class BlockScanHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if(!"POST".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            try {
+                JsonArray body = JsonParser.parseString(readBody(exchange)).getAsJsonArray();
+                String result = BlockScanner.scanBlocks(mcServer, selection, body);
+                sendJson(exchange, 200, result);
+            } catch(Exception e) {
+                sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
+            }
+        }
+    }
+
+    class EntityScanHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if(!"POST".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            try {
+                JsonArray body = JsonParser.parseString(readBody(exchange)).getAsJsonArray();
+                String result = BlockScanner.scanEntities(mcServer, selection, body);
+                sendJson(exchange, 200, result);
+            } catch(Exception e) {
+                sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
+            }
+        }
+    }
+
+    class StructurePaletteHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if(!"GET".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            String query = exchange.getRequestURI().getQuery();
+            String name = null;
+            if(query != null) {
+                for(String param : query.split("&")) {
+                    String[] pair = param.split("=");
+                    if(pair.length > 1 && "name".equals(pair[0])) {
+                        name = java.net.URLDecoder.decode(pair[1], java.nio.charset.StandardCharsets.UTF_8);
+                        break;
+                    }
+                }
+            }
+            if(name == null) {
+                sendJson(exchange, 400, GSON.toJson(errorJson("Missing 'name' query parameter")));
+                return;
+            }
+            String result = BlockScanner.getStructurePalette(mcServer, name);
+            sendJson(exchange, 200, result);
         }
     }
 }

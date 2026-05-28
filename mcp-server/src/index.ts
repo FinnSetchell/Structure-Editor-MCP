@@ -456,6 +456,61 @@ server.tool(
     }
 );
 
+server.tool(
+    "scan_blocks",
+    `Scan the currently selected region for specific blocks. Returns their coordinates.`,
+    {
+        blocks: z.array(z.string()).describe("Array of block IDs to search for, e.g. ['minecraft:diamond_ore']"),
+    },
+    async ({ blocks }) => {
+        const data = await modPost("/scan/blocks", blocks) as any;
+        if (data.error) return textResult(data);
+        if (!data.blocks || data.blocks.length === 0) return textResult({ count: 0, message: "No matching blocks found." });
+        
+        const lines: string[] = [];
+        if (data.warning) lines.push(`WARNING: ${data.warning}`);
+        lines.push(`Found ${data.count} matching block(s):`);
+        for (const b of data.blocks) {
+            lines.push(`[${b.id}] at (${b.x}, ${b.y}, ${b.z})`);
+        }
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    }
+);
+
+server.tool(
+    "scan_entities",
+    `Scan the currently selected region for specific entities. Returns their coordinates and basic info.`,
+    {
+        entities: z.array(z.string()).optional().describe("Array of entity IDs to search for, e.g. ['minecraft:zombie']. Omit or pass empty array to return all entities."),
+    },
+    async ({ entities }) => {
+        const data = await modPost("/scan/entities", entities || []) as any;
+        if (data.error) return textResult(data);
+        if (!data.entities || data.entities.length === 0) return textResult({ count: 0, message: "No matching entities found." });
+        
+        const lines: string[] = [];
+        if (data.warning) lines.push(`WARNING: ${data.warning}`);
+        lines.push(`Found ${data.count} matching entit(ies):`);
+        for (const e of data.entities) {
+            const name = e.custom_name ? ` | name: ${e.custom_name}` : '';
+            lines.push(`[${e.type}] at (${e.x}, ${e.y}, ${e.z})${name} | uuid: ${e.uuid}`);
+        }
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    }
+);
+
+server.tool(
+    "get_structure_palette",
+    `Read a structure's NBT and return a list of all unique block states used within it.`,
+    {
+        structure_name: z.string().describe("The structure name, including namespace (e.g. 'mns:mega_fortress/intact')"),
+    },
+    async ({ structure_name }) => {
+        const data = await modGet(`/structure/palette?name=${encodeURIComponent(structure_name)}`) as any;
+        return textResult(data);
+    }
+);
+
 // --- download structure ---
 
 server.tool(

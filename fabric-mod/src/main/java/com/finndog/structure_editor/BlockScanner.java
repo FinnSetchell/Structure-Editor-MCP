@@ -28,6 +28,18 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import net.minecraft.registry.Registries;
+import net.minecraft.util.math.Box;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.EntityType;
+import net.minecraft.structure.StructureTemplateManager;
+import net.minecraft.structure.StructureTemplate;
+import net.minecraft.nbt.NbtList;
+import net.minecraft.block.BlockState;
+import net.minecraft.block.Block;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.Optional;
 
 public class BlockScanner {
 
@@ -734,6 +746,200 @@ public class BlockScanner {
         } catch(ExecutionException | InterruptedException e) {
             JsonObject err = new JsonObject();
             err.addProperty("error", e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+            return GSON.toJson(err);
+        }
+    }
+
+    public static String scanBlocks(MinecraftServer server, SelectionManager selection, JsonArray targetBlocks) {
+        if(!selection.isComplete()) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "No complete selection.");
+            return GSON.toJson(err);
+        }
+        
+        CompletableFuture<JsonObject> future = new CompletableFuture<>();
+        server.execute(() -> {
+            try {
+                BlockPos min = selection.getMin();
+                BlockPos max = selection.getMax();
+                
+                long volume = (max.getX() - min.getX() + 1L) * (max.getY() - min.getY() + 1L) * (max.getZ() - min.getZ() + 1L);
+                if (volume > 1000000) {
+                    throw new IllegalArgumentException("Selection too large for block scanning (max 1,000,000 blocks). Selected: " + volume);
+                }
+
+                ServerWorld world = server.getOverworld();
+                
+                Set<Block> targets = new HashSet<>();
+                for (JsonElement e : targetBlocks) {
+                    if (e.isJsonPrimitive()) {
+                        Identifier id = Identifier.tryParse(e.getAsString());
+                        if (id != null && Registries.BLOCK.containsId(id)) {
+                            targets.add(Registries.BLOCK.get(id));
+                        }
+                    }
+                }
+
+                JsonArray results = new JsonArray();
+                for (BlockPos pos : BlockPos.iterate(min, max)) {
+                    if (results.size() >= 2000) break;
+                    
+                    BlockState state = world.getBlockState(pos);
+                    if (targets.contains(state.getBlock())) {
+                        JsonObject obj = new JsonObject();
+                        obj.addProperty("x", pos.getX());
+                        obj.addProperty("y", pos.getY());
+                        obj.addProperty("z", pos.getZ());
+                        obj.addProperty("id", Registries.BLOCK.getId(state.getBlock()).toString());
+                        results.add(obj);
+                    }
+                }
+
+                JsonObject wrapper = new JsonObject();
+                wrapper.addProperty("count", results.size());
+                if (results.size() >= 2000) wrapper.addProperty("warning", "Result limit of 2000 reached.");
+                wrapper.add("blocks", results);
+                future.complete(wrapper);
+            } catch(Exception e) {
+                future.completeExceptionally(e);
+            }
+        });
+
+        try {
+            return GSON.toJson(future.get(10, TimeUnit.SECONDS));
+        } catch(Exception e) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", e.getMessage());
+            return GSON.toJson(err);
+        }
+    }
+
+    public static String scanEntities(MinecraftServer server, SelectionManager selection, JsonArray targetEntities) {
+        if(!selection.isComplete()) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "No complete selection.");
+            return GSON.toJson(err);
+        }
+        
+        CompletableFuture<JsonObject> future = new CompletableFuture<>();
+        server.execute(() -> {
+            try {
+                BlockPos min = selection.getMin();
+                BlockPos max = selection.getMax();
+                Box box = new Box(min.getX(), min.getY(), min.getZ(), max.getX() + 1.0, max.getY() + 1.0, max.getZ() + 1.0);
+                
+                Set<EntityType<?>> targets = new HashSet<>();
+                if (targetEntities != null && !targetEntities.isEmpty()) {
+                    for (JsonElement e : targetEntities) {
+                        if (e.isJsonPrimitive()) {
+                            Identifier id = Identifier.tryParse(e.getAsString());
+                            if (id != null && Registries.ENTITY_TYPE.containsId(id)) {
+                                targets.add(Registries.ENTITY_TYPE.get(id));
+                            }
+                        }
+                    }
+                }
+
+                ServerWorld world = server.getOverworld();
+                List<Entity> entities = world.getOtherEntities(null, box, e -> targets.isEmpty() || targets.contains(e.getType()));
+                
+                JsonArray results = new JsonArray();
+                int count = 0;
+                for (Entity e : entities) {
+                    if (count >= 1000) break;
+                    JsonObject obj = new JsonObject();
+                    obj.addProperty("type", Registries.ENTITY_TYPE.getId(e.getType()).toString());
+                    obj.addProperty("uuid", e.getUuidAsString());
+                    obj.addProperty("x", e.getX());
+                    obj.addProperty("y", e.getY());
+                    obj.addProperty("z", e.getZ());
+                    if (e.hasCustomName()) {
+                        obj.addProperty("custom_name", e.getCustomName().getString());
+                    }
+                    results.add(obj);
+                    count++;
+                }
+
+                JsonObject wrapper = new JsonObject();
+                wrapper.addProperty("count", results.size());
+                if (results.size() >= 1000) wrapper.addProperty("warning", "Result limit of 1000 reached.");
+                wrapper.add("entities", results);
+                future.complete(wrapper);
+            } catch(Exception e) {
+                future.completeExceptionally(e);
+            }
+        });
+
+        try {
+            return GSON.toJson(future.get(10, TimeUnit.SECONDS));
+        } catch(Exception e) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", e.getMessage());
+            return GSON.toJson(err);
+        }
+    }
+
+    public static String getStructurePalette(MinecraftServer server, String structureName) {
+        CompletableFuture<JsonObject> future = new CompletableFuture<>();
+        server.execute(() -> {
+            try {
+                Identifier id = Identifier.tryParse(structureName);
+                if (id == null) {
+                    throw new IllegalArgumentException("Invalid structure identifier: " + structureName);
+                }
+
+                StructureTemplateManager manager = server.getStructureTemplateManager();
+                Optional<StructureTemplate> opt = manager.getTemplate(id);
+                
+                if (opt.isEmpty()) {
+                    throw new IllegalArgumentException("Structure not found: " + structureName);
+                }
+
+                StructureTemplate template = opt.get();
+                NbtCompound nbt = new NbtCompound();
+                nbt = template.writeNbt(nbt);
+                
+                Set<String> uniqueBlocks = new HashSet<>();
+                
+                if (nbt.contains("palettes")) {
+                    nbt.getList("palettes").ifPresent(palettes -> {
+                        for (int i = 0; i < palettes.size(); i++) {
+                            palettes.getList(i).ifPresent(palette -> {
+                                for (int j = 0; j < palette.size(); j++) {
+                                    palette.getCompound(j).ifPresent(comp -> uniqueBlocks.add(comp.getString("Name").orElse("")));
+                                }
+                            });
+                        }
+                    });
+                } else if (nbt.contains("palette")) {
+                    nbt.getList("palette").ifPresent(palette -> {
+                        for (int i = 0; i < palette.size(); i++) {
+                            palette.getCompound(i).ifPresent(comp -> uniqueBlocks.add(comp.getString("Name").orElse("")));
+                        }
+                    });
+                }
+
+                JsonArray results = new JsonArray();
+                for (String blockId : uniqueBlocks) {
+                    if (!blockId.isEmpty()) {
+                        results.add(blockId);
+                    }
+                }
+
+                JsonObject wrapper = new JsonObject();
+                wrapper.addProperty("structure", structureName);
+                wrapper.add("palette", results);
+                future.complete(wrapper);
+            } catch(Exception e) {
+                future.completeExceptionally(e);
+            }
+        });
+
+        try {
+            return GSON.toJson(future.get(10, TimeUnit.SECONDS));
+        } catch(Exception e) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", e.getMessage());
             return GSON.toJson(err);
         }
     }
