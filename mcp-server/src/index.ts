@@ -113,12 +113,18 @@ server.tool(
 server.tool(
     "scan_region",
     `Scan the currently selected region and return every jigsaw block and structure block found within it.
-Optional 'format' parameter: 'compact' (default, highly compressed line-by-line format to save tokens) or 'json' (full JSON structure).`,
+Optional 'format' parameter: 'compact' (default, highly compressed line-by-line format to save tokens) or 'json' (full JSON structure).
+Optional 'name_filter' parameter: only return blocks whose name, pool, or target contains this string.`,
     {
         format: z.enum(["compact", "json"]).optional().default("compact").describe("Output format. Use 'compact' (default) to save context tokens, or 'json' for raw structured data."),
+        name_filter: z.string().optional().describe("Only return blocks containing this string in their name, pool, or target properties."),
     },
-    async ({ format }) => {
-        const data = await modGet("/scan") as { count: number; blocks: Array<Record<string, unknown>> };
+    async ({ format, name_filter }) => {
+        let url = "/scan";
+        if (name_filter) {
+            url += "?name=" + encodeURIComponent(name_filter);
+        }
+        const data = await modGet(url) as { count: number; blocks: Array<Record<string, unknown>> };
         
         if (format === "json") {
             return textResult(data);
@@ -145,6 +151,7 @@ Optional 'format' parameter: 'compact' (default, highly compressed line-by-line 
                 if (block.joint) jp.push(`joint: ${block.joint}`);
                 if (block.selection_priority !== undefined) jp.push(`sel_pri: ${block.selection_priority}`);
                 if (block.placement_priority !== undefined) jp.push(`pl_pri: ${block.placement_priority}`);
+                if (block.origin_x !== undefined) jp.push(`origin: [${block.origin_x}, ${block.origin_y}, ${block.origin_z}]`);
                 lines.push(`[Jigsaw] at (${x}, ${y}, ${z}) | ${jp.join(" | ")}`);
             } else if (block.type === "structure_block") {
                 const sp = [];
@@ -153,6 +160,7 @@ Optional 'format' parameter: 'compact' (default, highly compressed line-by-line 
                 if (block.mode) sp.push(`mode: ${block.mode}`);
                 if (block.metadata) sp.push(`meta: ${block.metadata}`);
                 sp.push(`offset: [${block.posX}, ${block.posY}, ${block.posZ}]`);
+                if (block.origin_x !== undefined) sp.push(`origin: [${block.origin_x}, ${block.origin_y}, ${block.origin_z}]`);
                 sp.push(`size: [${block.sizeX}, ${block.sizeY}, ${block.sizeZ}]`);
                 if (block.rotation) sp.push(`rot: ${block.rotation}`);
                 if (block.mirror) sp.push(`mirror: ${block.mirror}`);
@@ -164,6 +172,29 @@ Optional 'format' parameter: 'compact' (default, highly compressed line-by-line 
         return {
             content: [{ type: "text" as const, text: lines.join("\n") }],
         };
+    }
+);
+
+server.tool(
+    "scan_containers",
+    `Scan the currently selected region and return all containers (chests, barrels, etc) and their loot tables. Returns highly compressed output to save tokens.`,
+    {},
+    async () => {
+        const data = await modGet("/scan/containers") as { count: number; containers?: Array<Record<string, unknown>>, error?: string };
+        if (data.error) {
+            return textResult(data);
+        }
+        if (!data.containers || data.containers.length === 0) {
+            return textResult({ count: 0, message: "No containers found in the selection region." });
+        }
+        const lines: string[] = [];
+        lines.push(`Scanned ${data.count} container(s) in selection:`);
+        for (const c of data.containers) {
+            const loot = c.loot_table ? `loot_table: ${c.loot_table}` : `loot_table: null`;
+            const seed = c.loot_table_seed ? ` | seed: ${c.loot_table_seed}` : '';
+            lines.push(`[${c.type}] at (${c.x}, ${c.y}, ${c.z}) | ${loot}${seed}`);
+        }
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     }
 );
 
@@ -397,6 +428,30 @@ Supported containers: chest, trapped_chest, barrel, hopper, dispenser, dropper, 
             body.slots = slots;
         }
         const data = await modPost("/container", body);
+        return textResult(data);
+    }
+);
+
+server.tool(
+    "batch_write_containers",
+    `Write items or assign loot tables to multiple containers in a single call. Much faster and uses fewer tokens than calling write_container multiple times.`,
+    {
+        containers: z.array(z.object({
+            x: z.number().int().describe("X coordinate of the container"),
+            y: z.number().int().describe("Y coordinate of the container"),
+            z: z.number().int().describe("Z coordinate of the container"),
+            slots: z.array(z.object({
+                slot: z.number().int().describe("Slot index (0-based)"),
+                id: z.string().describe("Item identifier, e.g. 'minecraft:iron_sword'"),
+                count: z.number().int().min(1).max(64).default(1).describe("Stack size"),
+                nbt: z.record(z.unknown()).optional().describe("Optional full NBT data for the item"),
+            })).optional().describe("Items to place in the container. Omit when setting a loot table."),
+            loot_table: z.string().optional().describe("Loot table identifier to assign, e.g. 'minecraft:chests/simple_dungeon'. Mutually exclusive with slots."),
+            loot_table_seed: z.number().optional().describe("Seed for loot table generation. Use 0 for random."),
+        })).describe("Array of container write operations"),
+    },
+    async ({ containers }) => {
+        const data = await modPost("/container/batch", containers);
         return textResult(data);
     }
 );

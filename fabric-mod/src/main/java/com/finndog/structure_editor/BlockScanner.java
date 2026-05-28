@@ -36,7 +36,7 @@ public class BlockScanner {
     // Scans all jigsaw and structure blocks in the selection, returns JSON array string.
     // This is called from the HTTP handler thread, so we submit work to the main server thread
     // and wait for the result.
-    public static String scanSelection(MinecraftServer server, SelectionManager selection) {
+    public static String scanSelection(MinecraftServer server, SelectionManager selection, String nameFilter) {
         if(!selection.isComplete()) {
             JsonObject err = new JsonObject();
             err.addProperty("error", "No complete selection. Use the stick wand to set pos1 (left-click) and pos2 (right-click).");
@@ -75,9 +75,20 @@ public class BlockScanner {
                                     
                                     BlockEntity be = chunk.getBlockEntity(pos);
                                     if (be instanceof JigsawBlockEntity jigsaw) {
-                                        results.add(jigsawToJson(jigsaw, pos, registries));
+                                        JsonObject jObj = jigsawToJson(jigsaw, pos, registries);
+                                        if (nameFilter == null || 
+                                            jObj.get("name").getAsString().contains(nameFilter) || 
+                                            jObj.get("target").getAsString().contains(nameFilter) || 
+                                            jObj.get("pool").getAsString().contains(nameFilter)) {
+                                            results.add(jObj);
+                                        }
                                     } else if (be instanceof StructureBlockBlockEntity structBlock) {
-                                        results.add(structureBlockToJson(structBlock, pos, registries));
+                                        JsonObject sObj = structureBlockToJson(structBlock, pos, registries);
+                                        if (nameFilter == null || 
+                                            sObj.get("name").getAsString().contains(nameFilter) || 
+                                            sObj.get("metadata").getAsString().contains(nameFilter)) {
+                                            results.add(sObj);
+                                        }
                                     }
                                 }
                             }
@@ -342,6 +353,12 @@ public class BlockScanner {
         obj.addProperty("x", pos.getX());
         obj.addProperty("y", pos.getY());
         obj.addProperty("z", pos.getZ());
+        
+        BlockPos offset = structBlock.getOffset();
+        BlockPos origin = pos.add(offset);
+        obj.addProperty("origin_x", origin.getX());
+        obj.addProperty("origin_y", origin.getY());
+        obj.addProperty("origin_z", origin.getZ());
 
         NbtCompound nbt = structBlock.createNbt(registries);
         obj.addProperty("name", nbt.getString("name").orElse(""));
@@ -619,6 +636,196 @@ public class BlockScanner {
                 ok.addProperty("success", true);
                 ok.addProperty("mode", "items");
                 ok.addProperty("slots_written", written);
+                future.complete(ok);
+            } catch(Exception e) {
+                future.completeExceptionally(e);
+            }
+        });
+
+        try {
+            return GSON.toJson(future.get(10, TimeUnit.SECONDS));
+        } catch(TimeoutException e) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "Timed out waiting for server thread");
+            return GSON.toJson(err);
+        } catch(ExecutionException | InterruptedException e) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+            return GSON.toJson(err);
+        }
+    }
+
+    // Scans all containers in the selection, returns JSON array of container types and loot tables
+    public static String scanContainers(MinecraftServer server, SelectionManager selection) {
+        if(!selection.isComplete()) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "No complete selection.");
+            return GSON.toJson(err);
+        }
+
+        CompletableFuture<JsonArray> future = new CompletableFuture<>();
+
+        server.execute(() -> {
+            try {
+                JsonArray results = new JsonArray();
+                BlockPos min = selection.getMin();
+                BlockPos max = selection.getMax();
+
+                ServerWorld world = server.getOverworld();
+
+                int minChunkX = min.getX() >> 4;
+                int maxChunkX = max.getX() >> 4;
+                int minChunkZ = min.getZ() >> 4;
+                int maxChunkZ = max.getZ() >> 4;
+
+                int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
+                if (chunkCount > 4096) {
+                    throw new IllegalArgumentException("Selection covers too many chunks (max 4096).");
+                }
+
+                for (int cx = minChunkX; cx <= maxChunkX; cx++) {
+                    for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
+                        WorldChunk chunk = world.getChunk(cx, cz);
+                        if (chunk != null) {
+                            for (BlockPos pos : chunk.getBlockEntityPositions()) {
+                                if (pos.getX() >= min.getX() && pos.getX() <= max.getX() &&
+                                    pos.getY() >= min.getY() && pos.getY() <= max.getY() &&
+                                    pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ()) {
+                                    
+                                    BlockEntity be = chunk.getBlockEntity(pos);
+                                    if (be instanceof Inventory inv) {
+                                        JsonObject obj = new JsonObject();
+                                        obj.addProperty("x", pos.getX());
+                                        obj.addProperty("y", pos.getY());
+                                        obj.addProperty("z", pos.getZ());
+                                        obj.addProperty("type", be.getClass().getSimpleName());
+                                        
+                                        if (be instanceof LootableContainerBlockEntity lootable) {
+                                            RegistryKey<LootTable> lootKey = lootable.getLootTable();
+                                            obj.addProperty("loot_table", lootKey != null ? lootKey.getValue().toString() : null);
+                                            obj.addProperty("loot_table_seed", lootable.getLootTableSeed());
+                                        } else {
+                                            obj.add("loot_table", JsonNull.INSTANCE);
+                                        }
+                                        results.add(obj);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                future.complete(results);
+            } catch(Exception e) {
+                future.completeExceptionally(e);
+            }
+        });
+
+        try {
+            JsonArray results = future.get(10, TimeUnit.SECONDS);
+            JsonObject wrapper = new JsonObject();
+            wrapper.addProperty("count", results.size());
+            wrapper.add("containers", results);
+            return GSON.toJson(wrapper);
+        } catch(TimeoutException e) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "Timed out waiting for server thread");
+            return GSON.toJson(err);
+        } catch(ExecutionException | InterruptedException e) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+            return GSON.toJson(err);
+        }
+    }
+
+    // Bulk writes items and/or loot tables to multiple container block entities
+    public static String writeContainersBatch(MinecraftServer server, JsonArray requests) {
+        CompletableFuture<JsonObject> future = new CompletableFuture<>();
+
+        server.execute(() -> {
+            try {
+                ServerWorld world = server.getOverworld();
+                RegistryWrapper.WrapperLookup registries = server.getRegistryManager();
+                int successCount = 0;
+                int errorCount = 0;
+
+                for (JsonElement reqElem : requests) {
+                    if (!reqElem.isJsonObject()) continue;
+                    JsonObject request = reqElem.getAsJsonObject();
+                    
+                    if(!request.has("x") || !request.has("y") || !request.has("z")) {
+                        errorCount++;
+                        continue;
+                    }
+
+                    int x = request.get("x").getAsInt();
+                    int y = request.get("y").getAsInt();
+                    int z = request.get("z").getAsInt();
+                    BlockPos pos = new BlockPos(x, y, z);
+
+                    world.getChunk(pos.getX() >> 4, pos.getZ() >> 4);
+                    BlockEntity be = world.getBlockEntity(pos);
+
+                    if(be == null || !(be instanceof Inventory inv)) {
+                        errorCount++;
+                        continue;
+                    }
+
+                    inv.clear();
+
+                    if(request.has("loot_table") && !request.get("loot_table").isJsonNull()) {
+                        if(be instanceof LootableContainerBlockEntity lootable) {
+                            String lootTableId = request.get("loot_table").getAsString();
+                            long seed = request.has("loot_table_seed") ? request.get("loot_table_seed").getAsLong() : 0L;
+                            RegistryKey<LootTable> lootKey = RegistryKey.of(RegistryKeys.LOOT_TABLE, Identifier.of(lootTableId));
+                            lootable.setLootTable(lootKey, seed);
+                            be.markDirty();
+                            world.updateListeners(pos, world.getBlockState(pos), world.getBlockState(pos), 3);
+                            successCount++;
+                        } else {
+                            errorCount++;
+                        }
+                        continue;
+                    }
+
+                    if(be instanceof LootableContainerBlockEntity lootable) {
+                        lootable.setLootTable(null, 0L);
+                    }
+
+                    if(request.has("slots") && request.get("slots").isJsonArray()) {
+                        JsonArray slotsArr = request.getAsJsonArray("slots");
+                        for(JsonElement elem : slotsArr) {
+                            if(!elem.isJsonObject()) continue;
+                            JsonObject slotObj = elem.getAsJsonObject();
+                            int slot = slotObj.has("slot") ? slotObj.get("slot").getAsInt() : -1;
+                            if(slot < 0 || slot >= inv.size()) continue;
+
+                            NbtCompound itemNbt;
+                            if(slotObj.has("nbt") && slotObj.get("nbt").isJsonObject()) {
+                                itemNbt = jsonToNbt(slotObj.getAsJsonObject("nbt"));
+                            } else {
+                                itemNbt = new NbtCompound();
+                                itemNbt.putString("id", slotObj.has("id") ? slotObj.get("id").getAsString() : "minecraft:air");
+                                itemNbt.putInt("count", slotObj.has("count") ? slotObj.get("count").getAsInt() : 1);
+                            }
+
+                            RegistryOps<NbtElement> nbtOps = registries.getOps(NbtOps.INSTANCE);
+                            ItemStack stack = ItemStack.CODEC.parse(nbtOps, itemNbt).resultOrPartial(e -> {}).orElse(ItemStack.EMPTY);
+                            if(!stack.isEmpty()) {
+                                inv.setStack(slot, stack);
+                            }
+                        }
+                    }
+
+                    be.markDirty();
+                    world.updateListeners(pos, world.getBlockState(pos), world.getBlockState(pos), 3);
+                    successCount++;
+                }
+
+                JsonObject ok = new JsonObject();
+                ok.addProperty("success", true);
+                ok.addProperty("successful_writes", successCount);
+                ok.addProperty("failed_writes", errorCount);
                 future.complete(ok);
             } catch(Exception e) {
                 future.completeExceptionally(e);

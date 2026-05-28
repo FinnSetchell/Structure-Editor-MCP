@@ -38,11 +38,13 @@ public class EditorHttpServer {
             server.createContext("/health",    new HealthHandler());
             server.createContext("/selection", new SelectionHandler());
             server.createContext("/scan",      new ScanHandler());
+            server.createContext("/scan/containers", new ContainerScanHandler());
             server.createContext("/edit",      new EditHandler());
             server.createContext("/batch",     new BatchHandler());
             server.createContext("/save",      new SaveHandler());
             server.createContext("/download",  new DownloadHandler());
             server.createContext("/container", new ContainerHandler());
+            server.createContext("/container/batch", new BatchContainerHandler());
             server.setExecutor(Executors.newFixedThreadPool(4));
             server.start();
             StructureEditorMod.LOGGER.info("Structure Editor HTTP server started on http://{}:{}", config.host, config.port);
@@ -216,7 +218,35 @@ public class EditorHttpServer {
         public void handle(HttpExchange exchange) throws IOException {
             if(!checkAuth(exchange)) return;
             if(!serverReady(exchange)) return;
-            String result = BlockScanner.scanSelection(mcServer, selection);
+            
+            String query = exchange.getRequestURI().getQuery();
+            String nameFilter = null;
+            if(query != null) {
+                for(String param : query.split("&")) {
+                    String[] pair = param.split("=");
+                    if(pair.length > 1 && "name".equals(pair[0])) {
+                        nameFilter = java.net.URLDecoder.decode(pair[1], StandardCharsets.UTF_8);
+                        break;
+                    }
+                }
+            }
+
+            String result = BlockScanner.scanSelection(mcServer, selection, nameFilter);
+            sendJson(exchange, 200, result);
+        }
+    }
+
+    // GET /scan/containers — scan the selected region and return all containers
+    class ContainerScanHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if(!"GET".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            String result = BlockScanner.scanContainers(mcServer, selection);
             sendJson(exchange, 200, result);
         }
     }
@@ -407,6 +437,32 @@ public class EditorHttpServer {
             }
             else {
                 exchange.sendResponseHeaders(405, -1);
+            }
+        }
+    }
+
+    class BatchContainerHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if(!"POST".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            try {
+                JsonArray body = JsonParser.parseString(readBody(exchange)).getAsJsonArray();
+                String result = BlockScanner.writeContainersBatch(mcServer, body);
+                sendJson(exchange, 200, result);
+                
+                try {
+                    JsonObject resObj = JsonParser.parseString(result).getAsJsonObject();
+                    if(resObj.has("successful_writes")) {
+                        broadcastActionBar("Batch wrote " + resObj.get("successful_writes").getAsInt() + " containers");
+                    }
+                } catch(Exception ignored) {}
+            } catch(Exception e) {
+                sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
             }
         }
     }
