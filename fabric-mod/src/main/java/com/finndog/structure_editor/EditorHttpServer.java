@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.text.Text;
 
 import java.io.*;
 import java.net.InetSocketAddress;
@@ -112,6 +113,17 @@ public class EditorHttpServer {
         return false;
     }
 
+    private void broadcastActionBar(String message) {
+        if(mcServer != null) {
+            mcServer.execute(() -> {
+                Text text = Text.literal("§7[Editor] §f" + message);
+                mcServer.getPlayerManager().getPlayerList().forEach(player -> {
+                    player.sendMessage(text, true);
+                });
+            });
+        }
+    }
+
     //////////////////////////////
 
     // GET /health — basic liveness check
@@ -183,6 +195,11 @@ public class EditorHttpServer {
                     ok.addProperty("success", true);
                     ok.addProperty("complete", selection.isComplete());
                     sendJson(exchange, 200, GSON.toJson(ok));
+                    if(selection.isComplete()) {
+                        broadcastActionBar("Selection complete");
+                    } else {
+                        broadcastActionBar("Selection updated");
+                    }
                 } catch(Exception e) {
                     sendJson(exchange, 400, GSON.toJson(errorJson("Bad JSON: " + e.getMessage())));
                 }
@@ -219,6 +236,9 @@ public class EditorHttpServer {
                 JsonObject body = JsonParser.parseString(readBody(exchange)).getAsJsonObject();
                 String result = BlockScanner.editBlock(mcServer, body);
                 sendJson(exchange, 200, result);
+                if(body.has("x") && body.has("y") && body.has("z")) {
+                    broadcastActionBar("Edited block at " + body.get("x").getAsInt() + ", " + body.get("y").getAsInt() + ", " + body.get("z").getAsInt());
+                }
             } catch(Exception e) {
                 sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
             }
@@ -240,6 +260,13 @@ public class EditorHttpServer {
                 JsonArray body = JsonParser.parseString(readBody(exchange)).getAsJsonArray();
                 String result = BlockScanner.editBatch(mcServer, body);
                 sendJson(exchange, 200, result);
+                
+                try {
+                    JsonObject resObj = JsonParser.parseString(result).getAsJsonObject();
+                    if(resObj.has("edited")) {
+                        broadcastActionBar("Batch edited " + resObj.get("edited").getAsInt() + " blocks");
+                    }
+                } catch(Exception ignored) {}
             } catch(Exception e) {
                 sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
             }
@@ -260,6 +287,13 @@ public class EditorHttpServer {
                 JsonObject body = bodyStr.trim().isEmpty() ? new JsonObject() : JsonParser.parseString(bodyStr).getAsJsonObject();
                 String result = BlockScanner.saveStructures(mcServer, selection, body);
                 sendJson(exchange, 200, result);
+                
+                try {
+                    JsonObject resObj = JsonParser.parseString(result).getAsJsonObject();
+                    if(resObj.has("saved")) {
+                        broadcastActionBar("Saved " + resObj.get("saved").getAsInt() + " structure(s)");
+                    }
+                } catch(Exception ignored) {}
             } catch(Exception e) {
                 sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
             }
@@ -356,6 +390,17 @@ public class EditorHttpServer {
                     JsonObject body = JsonParser.parseString(readBody(exchange)).getAsJsonObject();
                     String result = BlockScanner.writeContainer(mcServer, body);
                     sendJson(exchange, 200, result);
+                    
+                    try {
+                        JsonObject resObj = JsonParser.parseString(result).getAsJsonObject();
+                        if(resObj.has("mode")) {
+                            if("items".equals(resObj.get("mode").getAsString())) {
+                                broadcastActionBar("Container updated with items");
+                            } else {
+                                broadcastActionBar("Container assigned loot table: " + resObj.get("loot_table").getAsString());
+                            }
+                        }
+                    } catch(Exception ignored) {}
                 } catch(Exception e) {
                     sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
                 }
