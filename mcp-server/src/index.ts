@@ -113,12 +113,57 @@ server.tool(
 server.tool(
     "scan_region",
     `Scan the currently selected region and return every jigsaw block and structure block found within it.
-Each result includes the block type, position, and all editable fields (name, target, pool, final_state, joint for jigsaw blocks; name, author, mode, offset, size, rotation, mirror, etc. for structure blocks).
-The player must first set a selection with the in-game stick wand or via set_selection.`,
-    {},
-    async () => {
-        const data = await modGet("/scan");
-        return textResult(data);
+Optional 'format' parameter: 'compact' (default, highly compressed line-by-line format to save tokens) or 'json' (full JSON structure).`,
+    {
+        format: z.enum(["compact", "json"]).optional().default("compact").describe("Output format. Use 'compact' (default) to save context tokens, or 'json' for raw structured data."),
+    },
+    async ({ format }) => {
+        const data = await modGet("/scan") as { count: number; blocks: Array<Record<string, unknown>> };
+        
+        if (format === "json") {
+            return textResult(data);
+        }
+
+        if (!data.blocks || data.blocks.length === 0) {
+            return textResult({ count: 0, message: "No jigsaw or structure blocks found in the selection region." });
+        }
+
+        const lines: string[] = [];
+        lines.push(`Scanned ${data.count} block(s) in selection:`);
+        
+        for (const block of data.blocks) {
+            const x = block.x;
+            const y = block.y;
+            const z = block.z;
+            
+            if (block.type === "jigsaw") {
+                const jp = [];
+                if (block.name) jp.push(`name: ${block.name}`);
+                if (block.target) jp.push(`target: ${block.target}`);
+                if (block.pool) jp.push(`pool: ${block.pool}`);
+                if (block.final_state) jp.push(`final_state: ${block.final_state}`);
+                if (block.joint) jp.push(`joint: ${block.joint}`);
+                if (block.selection_priority !== undefined) jp.push(`sel_pri: ${block.selection_priority}`);
+                if (block.placement_priority !== undefined) jp.push(`pl_pri: ${block.placement_priority}`);
+                lines.push(`[Jigsaw] at (${x}, ${y}, ${z}) | ${jp.join(" | ")}`);
+            } else if (block.type === "structure_block") {
+                const sp = [];
+                if (block.name) sp.push(`name: ${block.name}`);
+                if (block.author) sp.push(`author: ${block.author}`);
+                if (block.mode) sp.push(`mode: ${block.mode}`);
+                if (block.metadata) sp.push(`meta: ${block.metadata}`);
+                sp.push(`offset: [${block.posX}, ${block.posY}, ${block.posZ}]`);
+                sp.push(`size: [${block.sizeX}, ${block.sizeY}, ${block.sizeZ}]`);
+                if (block.rotation) sp.push(`rot: ${block.rotation}`);
+                if (block.mirror) sp.push(`mirror: ${block.mirror}`);
+                if (block.integrity !== undefined) sp.push(`integrity: ${block.integrity}`);
+                lines.push(`[Structure] at (${x}, ${y}, ${z}) | ${sp.join(" | ")}`);
+            }
+        }
+
+        return {
+            content: [{ type: "text" as const, text: lines.join("\n") }],
+        };
     }
 );
 
@@ -299,6 +344,59 @@ Provide x, y, and z to only trigger a specific structure block. Leave them out t
             body.z = zCoord;
         }
         const data = await modPost("/save", body);
+        return textResult(data);
+    }
+);
+
+// --- container read/write ---
+
+server.tool(
+    "read_container",
+    `Read the contents of a container block (chest, barrel, hopper, dispenser, etc.) at a specific position.
+Returns all non-empty slots with item id and count, plus loot_table and loot_table_seed if set.
+If a loot table is active, items won't appear until a player opens the container for the first time.`,
+    {
+        x: z.number().int().describe("X coordinate of the container"),
+        y: z.number().int().describe("Y coordinate of the container"),
+        z: z.number().int().describe("Z coordinate of the container"),
+    },
+    async ({ x, y, z: zCoord }) => {
+        const data = await modGet(`/container?x=${x}&y=${y}&z=${zCoord}`);
+        return textResult(data);
+    }
+);
+
+server.tool(
+    "write_container",
+    `Write items or a loot table to a container block (chest, barrel, hopper, dispenser, etc.) at a specific position.
+The container is always cleared first. Loot table and items are mutually exclusive — providing loot_table ignores slots.
+
+To write items: provide 'slots' array with {slot, id, count} entries.
+To set a loot table: provide 'loot_table' string (e.g. 'minecraft:chests/simple_dungeon') and optionally 'loot_table_seed'.
+
+Supported containers: chest, trapped_chest, barrel, hopper, dispenser, dropper, shulker_box.`,
+    {
+        x: z.number().int().describe("X coordinate of the container"),
+        y: z.number().int().describe("Y coordinate of the container"),
+        z: z.number().int().describe("Z coordinate of the container"),
+        slots: z.array(z.object({
+            slot: z.number().int().describe("Slot index (0-based)"),
+            id: z.string().describe("Item identifier, e.g. 'minecraft:iron_sword'"),
+            count: z.number().int().min(1).max(64).default(1).describe("Stack size"),
+            nbt: z.record(z.unknown()).optional().describe("Optional full NBT data for the item (for enchantments, custom names, etc.)"),
+        })).optional().describe("Items to place in the container. Omit when setting a loot table."),
+        loot_table: z.string().optional().describe("Loot table identifier to assign, e.g. 'minecraft:chests/simple_dungeon'. Mutually exclusive with slots."),
+        loot_table_seed: z.number().optional().describe("Seed for loot table generation. Use 0 for random."),
+    },
+    async ({ x, y, z: zCoord, slots, loot_table, loot_table_seed }) => {
+        const body: Record<string, unknown> = { x, y, z: zCoord };
+        if (loot_table !== undefined) {
+            body.loot_table = loot_table;
+            if (loot_table_seed !== undefined) body.loot_table_seed = loot_table_seed;
+        } else if (slots !== undefined) {
+            body.slots = slots;
+        }
+        const data = await modPost("/container", body);
         return textResult(data);
     }
 );

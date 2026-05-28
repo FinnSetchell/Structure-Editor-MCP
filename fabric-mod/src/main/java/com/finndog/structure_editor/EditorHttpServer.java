@@ -41,6 +41,7 @@ public class EditorHttpServer {
             server.createContext("/batch",     new BatchHandler());
             server.createContext("/save",      new SaveHandler());
             server.createContext("/download",  new DownloadHandler());
+            server.createContext("/container", new ContainerHandler());
             server.setExecutor(Executors.newFixedThreadPool(4));
             server.start();
             StructureEditorMod.LOGGER.info("Structure Editor HTTP server started on http://{}:{}", config.host, config.port);
@@ -325,6 +326,42 @@ public class EditorHttpServer {
                 JsonObject err = new JsonObject();
                 err.addProperty("error", "Download failed: " + e.getMessage());
                 sendJson(exchange, 500, GSON.toJson(err));
+            }
+        }
+    }
+    class ContainerHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+
+            if("GET".equals(exchange.getRequestMethod())) {
+                // Parse x, y, z from query string
+                String query = exchange.getRequestURI().getQuery();
+                JsonObject req = new JsonObject();
+                if(query != null) {
+                    for(String param : query.split("&")) {
+                        String[] pair = param.split("=");
+                        if(pair.length > 1) {
+                            try { req.addProperty(pair[0], Integer.parseInt(pair[1])); }
+                            catch(NumberFormatException ignored) {}
+                        }
+                    }
+                }
+                String result = BlockScanner.readContainer(mcServer, req);
+                sendJson(exchange, 200, result);
+            }
+            else if("POST".equals(exchange.getRequestMethod())) {
+                try {
+                    JsonObject body = JsonParser.parseString(readBody(exchange)).getAsJsonObject();
+                    String result = BlockScanner.writeContainer(mcServer, body);
+                    sendJson(exchange, 200, result);
+                } catch(Exception e) {
+                    sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
+                }
+            }
+            else {
+                exchange.sendResponseHeaders(405, -1);
             }
         }
     }

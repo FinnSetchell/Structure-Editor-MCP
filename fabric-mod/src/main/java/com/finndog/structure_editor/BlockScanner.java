@@ -3,16 +3,25 @@ package com.finndog.structure_editor;
 import com.google.gson.*;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.JigsawBlockEntity;
+import net.minecraft.block.entity.LootableContainerBlockEntity;
 import net.minecraft.block.entity.StructureBlockBlockEntity;
+import net.minecraft.inventory.Inventory;
+import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
+import net.minecraft.nbt.NbtElement;
+import net.minecraft.registry.RegistryKey;
+import net.minecraft.registry.RegistryKeys;
 import net.minecraft.registry.RegistryWrapper;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.loot.LootTable;
+import net.minecraft.nbt.NbtElement;
+import net.minecraft.nbt.NbtOps;
+import net.minecraft.registry.RegistryOps;
 
 import net.minecraft.world.chunk.WorldChunk;
-import java.util.Map;
-import java.util.Set;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -22,7 +31,7 @@ import java.util.concurrent.TimeoutException;
 
 public class BlockScanner {
 
-    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static final Gson GSON = new Gson();
 
     // Scans all jigsaw and structure blocks in the selection, returns JSON array string.
     // This is called from the HTTP handler thread, so we submit work to the main server thread
@@ -324,8 +333,6 @@ public class BlockScanner {
         if(nbt.contains("selection_priority")) obj.addProperty("selection_priority", nbt.getInt("selection_priority").orElse(0));
         if(nbt.contains("placement_priority")) obj.addProperty("placement_priority", nbt.getInt("placement_priority").orElse(0));
 
-        // Also include the full raw NBT so nothing is hidden
-        obj.add("nbt", nbtToJson(nbt));
         return obj;
     }
 
@@ -352,7 +359,6 @@ public class BlockScanner {
         obj.addProperty("ignoreEntities", nbt.getBoolean("ignoreEntities").orElse(false));
         obj.addProperty("integrity", nbt.getFloat("integrity").orElse(1.0f));
 
-        obj.add("nbt", nbtToJson(nbt));
         return obj;
     }
 
@@ -420,5 +426,239 @@ public class BlockScanner {
                 }
             }
         }
+    }
+
+    //////////////////////////////
+
+    // Reads all item stacks and loot table from a container block entity at the given position.
+    public static String readContainer(MinecraftServer server, JsonObject request) {
+        if(!request.has("x") || !request.has("y") || !request.has("z")) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "Request must include x, y, z");
+            return GSON.toJson(err);
+        }
+
+        int x = request.get("x").getAsInt();
+        int y = request.get("y").getAsInt();
+        int z = request.get("z").getAsInt();
+        BlockPos pos = new BlockPos(x, y, z);
+
+        CompletableFuture<JsonObject> future = new CompletableFuture<>();
+
+        server.execute(() -> {
+            try {
+                ServerWorld world = server.getOverworld();
+                RegistryWrapper.WrapperLookup registries = server.getRegistryManager();
+                world.getChunk(pos.getX() >> 4, pos.getZ() >> 4);
+                BlockEntity be = world.getBlockEntity(pos);
+
+                if(be == null) {
+                    JsonObject err = new JsonObject();
+                    err.addProperty("error", "No block entity at " + pos.toShortString());
+                    future.complete(err);
+                    return;
+                }
+                if(!(be instanceof Inventory inv)) {
+                    JsonObject err = new JsonObject();
+                    err.addProperty("error", "Block at " + pos.toShortString() + " is not a container (got " + be.getClass().getSimpleName() + ")");
+                    future.complete(err);
+                    return;
+                }
+
+                JsonObject result = new JsonObject();
+                result.addProperty("type", be.getClass().getSimpleName());
+                result.addProperty("size", inv.size());
+
+                // Read loot table if present
+                if(be instanceof LootableContainerBlockEntity lootable) {
+                    RegistryKey<LootTable> lootKey = lootable.getLootTable();
+                    result.addProperty("loot_table", lootKey != null ? lootKey.getValue().toString() : null);
+                    result.addProperty("loot_table_seed", lootable.getLootTableSeed());
+                } else {
+                    result.add("loot_table", JsonNull.INSTANCE);
+                }
+
+                JsonArray slots = new JsonArray();
+                for(int i = 0; i < inv.size(); i++) {
+                    ItemStack stack = inv.getStack(i);
+                    if(stack.isEmpty()) continue;
+                    RegistryOps<NbtElement> nbtOps = registries.getOps(NbtOps.INSTANCE);
+                    NbtCompound nbt = (NbtCompound) ItemStack.CODEC.encodeStart(nbtOps, stack).getOrThrow();
+                    JsonObject slot = new JsonObject();
+                    slot.addProperty("slot", i);
+                    slot.addProperty("id", nbt.getString("id").orElse("minecraft:air"));
+                    slot.addProperty("count", stack.getCount());
+                    // Include full component NBT for non-vanilla items or items with custom data
+                    if(nbt.getKeys().size() > 2) {
+                        slot.add("nbt", nbtToJson(nbt));
+                    }
+                    slots.add(slot);
+                }
+                result.addProperty("count", slots.size());
+                result.add("slots", slots);
+                future.complete(result);
+            } catch(Exception e) {
+                future.completeExceptionally(e);
+            }
+        });
+
+        try {
+            return GSON.toJson(future.get(10, TimeUnit.SECONDS));
+        } catch(TimeoutException e) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "Timed out waiting for server thread");
+            return GSON.toJson(err);
+        } catch(ExecutionException | InterruptedException e) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+            return GSON.toJson(err);
+        }
+    }
+
+    // Writes items and/or a loot table to a container block entity.
+    // Setting a loot_table clears all items. Setting items clears any existing loot table.
+    // All slots are cleared first, then the provided slots are written.
+    public static String writeContainer(MinecraftServer server, JsonObject request) {
+        if(!request.has("x") || !request.has("y") || !request.has("z")) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "Request must include x, y, z");
+            return GSON.toJson(err);
+        }
+
+        int x = request.get("x").getAsInt();
+        int y = request.get("y").getAsInt();
+        int z = request.get("z").getAsInt();
+        BlockPos pos = new BlockPos(x, y, z);
+
+        CompletableFuture<JsonObject> future = new CompletableFuture<>();
+
+        server.execute(() -> {
+            try {
+                ServerWorld world = server.getOverworld();
+                RegistryWrapper.WrapperLookup registries = server.getRegistryManager();
+                world.getChunk(pos.getX() >> 4, pos.getZ() >> 4);
+                BlockEntity be = world.getBlockEntity(pos);
+
+                if(be == null) {
+                    JsonObject err = new JsonObject();
+                    err.addProperty("error", "No block entity at " + pos.toShortString());
+                    future.complete(err);
+                    return;
+                }
+                if(!(be instanceof Inventory inv)) {
+                    JsonObject err = new JsonObject();
+                    err.addProperty("error", "Block at " + pos.toShortString() + " is not a container (got " + be.getClass().getSimpleName() + ")");
+                    future.complete(err);
+                    return;
+                }
+
+                // Always clear first
+                inv.clear();
+
+                if(request.has("loot_table") && !request.get("loot_table").isJsonNull()) {
+                    // Loot table mode — mutually exclusive with items
+                    if(!(be instanceof LootableContainerBlockEntity lootable)) {
+                        JsonObject err = new JsonObject();
+                        err.addProperty("error", "Block at " + pos.toShortString() + " does not support loot tables (" + be.getClass().getSimpleName() + ")");
+                        future.complete(err);
+                        return;
+                    }
+                    String lootTableId = request.get("loot_table").getAsString();
+                    long seed = request.has("loot_table_seed") ? request.get("loot_table_seed").getAsLong() : 0L;
+                    RegistryKey<LootTable> lootKey = RegistryKey.of(RegistryKeys.LOOT_TABLE, Identifier.of(lootTableId));
+                    lootable.setLootTable(lootKey, seed);
+                    be.markDirty();
+                    world.updateListeners(pos, world.getBlockState(pos), world.getBlockState(pos), 3);
+                    JsonObject ok = new JsonObject();
+                    ok.addProperty("success", true);
+                    ok.addProperty("mode", "loot_table");
+                    ok.addProperty("loot_table", lootTableId);
+                    ok.addProperty("loot_table_seed", seed);
+                    future.complete(ok);
+                    return;
+                }
+
+                // Item write mode — clear loot table if present
+                if(be instanceof LootableContainerBlockEntity lootable) {
+                    lootable.setLootTable(null, 0L);
+                }
+
+                int written = 0;
+                if(request.has("slots") && request.get("slots").isJsonArray()) {
+                    JsonArray slotsArr = request.getAsJsonArray("slots");
+                    for(JsonElement elem : slotsArr) {
+                        if(!elem.isJsonObject()) continue;
+                        JsonObject slotObj = elem.getAsJsonObject();
+                        int slot = slotObj.has("slot") ? slotObj.get("slot").getAsInt() : -1;
+                        if(slot < 0 || slot >= inv.size()) continue;
+
+                        NbtCompound itemNbt;
+                        if(slotObj.has("nbt") && slotObj.get("nbt").isJsonObject()) {
+                            // Full NBT provided — rebuild directly from it
+                            itemNbt = jsonToNbt(slotObj.getAsJsonObject("nbt"));
+                        } else {
+                            // Build minimal NBT from id + count
+                            itemNbt = new NbtCompound();
+                            itemNbt.putString("id", slotObj.has("id") ? slotObj.get("id").getAsString() : "minecraft:air");
+                            itemNbt.putInt("count", slotObj.has("count") ? slotObj.get("count").getAsInt() : 1);
+                        }
+
+                        RegistryOps<NbtElement> nbtOps = registries.getOps(NbtOps.INSTANCE);
+                        ItemStack stack = ItemStack.CODEC.parse(nbtOps, itemNbt).resultOrPartial(e -> {}).orElse(ItemStack.EMPTY);
+                        if(!stack.isEmpty()) {
+                            inv.setStack(slot, stack);
+                            written++;
+                        }
+                    }
+                }
+
+                be.markDirty();
+                world.updateListeners(pos, world.getBlockState(pos), world.getBlockState(pos), 3);
+
+                JsonObject ok = new JsonObject();
+                ok.addProperty("success", true);
+                ok.addProperty("mode", "items");
+                ok.addProperty("slots_written", written);
+                future.complete(ok);
+            } catch(Exception e) {
+                future.completeExceptionally(e);
+            }
+        });
+
+        try {
+            return GSON.toJson(future.get(10, TimeUnit.SECONDS));
+        } catch(TimeoutException e) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "Timed out waiting for server thread");
+            return GSON.toJson(err);
+        } catch(ExecutionException | InterruptedException e) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+            return GSON.toJson(err);
+        }
+    }
+
+    // Converts a JsonObject back into a flat NbtCompound (string/int/float/long values only)
+    private static NbtCompound jsonToNbt(JsonObject obj) {
+        NbtCompound nbt = new NbtCompound();
+        for(String key : obj.keySet()) {
+            JsonElement elem = obj.get(key);
+            if(elem.isJsonPrimitive()) {
+                JsonPrimitive prim = elem.getAsJsonPrimitive();
+                if(prim.isString()) {
+                    nbt.putString(key, prim.getAsString());
+                } else if(prim.isBoolean()) {
+                    nbt.putBoolean(key, prim.getAsBoolean());
+                } else if(prim.isNumber()) {
+                    String raw = prim.getAsString();
+                    if(raw.contains(".")) {
+                        nbt.putFloat(key, prim.getAsFloat());
+                    } else {
+                        nbt.putInt(key, prim.getAsInt());
+                    }
+                }
+            }
+        }
+        return nbt;
     }
 }
