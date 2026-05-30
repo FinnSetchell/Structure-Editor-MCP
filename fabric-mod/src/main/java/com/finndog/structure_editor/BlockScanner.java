@@ -684,6 +684,7 @@ public class BlockScanner {
                 BlockPos max = selection.getMax();
 
                 ServerWorld world = server.getOverworld();
+                RegistryWrapper.WrapperLookup registries = server.getRegistryManager();
 
                 int minChunkX = min.getX() >> 4;
                 int maxChunkX = max.getX() >> 4;
@@ -705,7 +706,7 @@ public class BlockScanner {
                                     pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ()) {
                                     
                                     BlockEntity be = chunk.getBlockEntity(pos);
-                                    if (be instanceof Inventory inv) {
+                                    if (be instanceof Inventory || be instanceof net.minecraft.block.entity.VaultBlockEntity || be instanceof net.minecraft.block.entity.TrialSpawnerBlockEntity) {
                                         JsonObject obj = new JsonObject();
                                         obj.addProperty("x", pos.getX());
                                         obj.addProperty("y", pos.getY());
@@ -716,6 +717,45 @@ public class BlockScanner {
                                             RegistryKey<LootTable> lootKey = lootable.getLootTable();
                                             obj.addProperty("loot_table", lootKey != null ? lootKey.getValue().toString() : null);
                                             obj.addProperty("loot_table_seed", lootable.getLootTableSeed());
+                                        } else if (be instanceof net.minecraft.block.entity.VaultBlockEntity) {
+                                            NbtCompound nbt = be.createNbt(registries);
+                                            if (nbt.contains("config")) {
+                                                NbtCompound config = nbt.getCompound("config").orElse(new NbtCompound());
+                                                if (config.contains("loot_table")) {
+                                                    String lt = config.getString("loot_table").orElse(null);
+                                                    if (lt != null) {
+                                                        obj.addProperty("loot_table", lt);
+                                                    } else {
+                                                        obj.add("loot_table", JsonNull.INSTANCE);
+                                                    }
+                                                } else {
+                                                    obj.add("loot_table", JsonNull.INSTANCE);
+                                                }
+                                            } else {
+                                                obj.add("loot_table", JsonNull.INSTANCE);
+                                            }
+                                        } else if (be instanceof net.minecraft.block.entity.TrialSpawnerBlockEntity) {
+                                            NbtCompound nbt = be.createNbt(registries);
+                                            if (nbt.contains("normal_config")) {
+                                                NbtCompound normalConfig = nbt.getCompound("normal_config").orElse(new NbtCompound());
+                                                if (normalConfig.contains("loot_tables_to_eject")) {
+                                                    NbtList ejectList = normalConfig.getList("loot_tables_to_eject").orElse(new NbtList());
+                                                    if (!ejectList.isEmpty()) {
+                                                        String data = ejectList.getCompound(0).orElse(new NbtCompound()).getString("data").orElse(null);
+                                                        if (data != null && !data.isEmpty()) {
+                                                            obj.addProperty("loot_table", data);
+                                                        } else {
+                                                            obj.add("loot_table", JsonNull.INSTANCE);
+                                                        }
+                                                    } else {
+                                                        obj.add("loot_table", JsonNull.INSTANCE);
+                                                    }
+                                                } else {
+                                                    obj.add("loot_table", JsonNull.INSTANCE);
+                                                }
+                                            } else {
+                                                obj.add("loot_table", JsonNull.INSTANCE);
+                                            }
                                         } else {
                                             obj.add("loot_table", JsonNull.INSTANCE);
                                         }
@@ -972,60 +1012,111 @@ public class BlockScanner {
                     world.getChunk(pos.getX() >> 4, pos.getZ() >> 4);
                     BlockEntity be = world.getBlockEntity(pos);
 
-                    if(be == null || !(be instanceof Inventory inv)) {
+                    if(be == null) {
                         errorCount++;
                         continue;
                     }
 
-                    inv.clear();
+                    if (be instanceof Inventory inv) {
+                        inv.clear();
+                        if(request.has("loot_table") && !request.get("loot_table").isJsonNull()) {
+                            if(be instanceof LootableContainerBlockEntity lootable) {
+                                String lootTableId = request.get("loot_table").getAsString();
+                                long seed = request.has("loot_table_seed") ? request.get("loot_table_seed").getAsLong() : 0L;
+                                RegistryKey<LootTable> lootKey = RegistryKey.of(RegistryKeys.LOOT_TABLE, Identifier.of(lootTableId));
+                                lootable.setLootTable(lootKey, seed);
+                                be.markDirty();
+                                world.updateListeners(pos, world.getBlockState(pos), world.getBlockState(pos), 3);
+                                successCount++;
+                            } else {
+                                errorCount++;
+                            }
+                            continue;
+                        }
 
-                    if(request.has("loot_table") && !request.get("loot_table").isJsonNull()) {
                         if(be instanceof LootableContainerBlockEntity lootable) {
+                            lootable.setLootTable(null, 0L);
+                        }
+
+                        if(request.has("slots") && request.get("slots").isJsonArray()) {
+                            JsonArray slotsArr = request.getAsJsonArray("slots");
+                            for(JsonElement elem : slotsArr) {
+                                if(!elem.isJsonObject()) continue;
+                                JsonObject slotObj = elem.getAsJsonObject();
+                                int slot = slotObj.has("slot") ? slotObj.get("slot").getAsInt() : -1;
+                                if(slot < 0 || slot >= inv.size()) continue;
+
+                                NbtCompound itemNbt;
+                                if(slotObj.has("nbt") && slotObj.get("nbt").isJsonObject()) {
+                                    itemNbt = jsonToNbt(slotObj.getAsJsonObject("nbt"));
+                                } else {
+                                    itemNbt = new NbtCompound();
+                                    itemNbt.putString("id", slotObj.has("id") ? slotObj.get("id").getAsString() : "minecraft:air");
+                                    itemNbt.putInt("count", slotObj.has("count") ? slotObj.get("count").getAsInt() : 1);
+                                }
+
+                                RegistryOps<NbtElement> nbtOps = registries.getOps(NbtOps.INSTANCE);
+                                ItemStack stack = ItemStack.CODEC.parse(nbtOps, itemNbt).resultOrPartial(e -> {}).orElse(ItemStack.EMPTY);
+                                if(!stack.isEmpty()) {
+                                    inv.setStack(slot, stack);
+                                }
+                            }
+                        }
+
+                        be.markDirty();
+                        world.updateListeners(pos, world.getBlockState(pos), world.getBlockState(pos), 3);
+                        successCount++;
+                    } else if (be instanceof net.minecraft.block.entity.VaultBlockEntity) {
+                        if (request.has("loot_table") && !request.get("loot_table").isJsonNull()) {
                             String lootTableId = request.get("loot_table").getAsString();
-                            long seed = request.has("loot_table_seed") ? request.get("loot_table_seed").getAsLong() : 0L;
-                            RegistryKey<LootTable> lootKey = RegistryKey.of(RegistryKeys.LOOT_TABLE, Identifier.of(lootTableId));
-                            lootable.setLootTable(lootKey, seed);
-                            be.markDirty();
-                            world.updateListeners(pos, world.getBlockState(pos), world.getBlockState(pos), 3);
-                            successCount++;
+                            NbtCompound nbt = be.createNbtWithIdentifyingData(registries);
+                            NbtCompound config = nbt.getCompound("config").orElse(new NbtCompound());
+                            config.putString("loot_table", lootTableId);
+                            nbt.put("config", config);
+                            
+                            BlockEntity newBe = BlockEntity.createFromNbt(pos, world.getBlockState(pos), nbt, registries);
+                            if (newBe != null) {
+                                world.removeBlockEntity(pos);
+                                world.addBlockEntity(newBe);
+                                newBe.markDirty();
+                                world.updateListeners(pos, world.getBlockState(pos), world.getBlockState(pos), 3);
+                                successCount++;
+                            } else {
+                                errorCount++;
+                            }
                         } else {
                             errorCount++;
                         }
-                        continue;
-                    }
-
-                    if(be instanceof LootableContainerBlockEntity lootable) {
-                        lootable.setLootTable(null, 0L);
-                    }
-
-                    if(request.has("slots") && request.get("slots").isJsonArray()) {
-                        JsonArray slotsArr = request.getAsJsonArray("slots");
-                        for(JsonElement elem : slotsArr) {
-                            if(!elem.isJsonObject()) continue;
-                            JsonObject slotObj = elem.getAsJsonObject();
-                            int slot = slotObj.has("slot") ? slotObj.get("slot").getAsInt() : -1;
-                            if(slot < 0 || slot >= inv.size()) continue;
-
-                            NbtCompound itemNbt;
-                            if(slotObj.has("nbt") && slotObj.get("nbt").isJsonObject()) {
-                                itemNbt = jsonToNbt(slotObj.getAsJsonObject("nbt"));
+                    } else if (be instanceof net.minecraft.block.entity.TrialSpawnerBlockEntity) {
+                        if (request.has("loot_table") && !request.get("loot_table").isJsonNull()) {
+                            String lootTableId = request.get("loot_table").getAsString();
+                            NbtCompound nbt = be.createNbtWithIdentifyingData(registries);
+                            
+                            NbtCompound normalConfig = nbt.getCompound("normal_config").orElse(new NbtCompound());
+                            NbtList ejectList = new NbtList();
+                            NbtCompound entry = new NbtCompound();
+                            entry.putString("data", lootTableId);
+                            entry.putInt("weight", 1);
+                            ejectList.add(entry);
+                            normalConfig.put("loot_tables_to_eject", ejectList);
+                            nbt.put("normal_config", normalConfig);
+                            
+                            BlockEntity newBe = BlockEntity.createFromNbt(pos, world.getBlockState(pos), nbt, registries);
+                            if (newBe != null) {
+                                world.removeBlockEntity(pos);
+                                world.addBlockEntity(newBe);
+                                newBe.markDirty();
+                                world.updateListeners(pos, world.getBlockState(pos), world.getBlockState(pos), 3);
+                                successCount++;
                             } else {
-                                itemNbt = new NbtCompound();
-                                itemNbt.putString("id", slotObj.has("id") ? slotObj.get("id").getAsString() : "minecraft:air");
-                                itemNbt.putInt("count", slotObj.has("count") ? slotObj.get("count").getAsInt() : 1);
+                                errorCount++;
                             }
-
-                            RegistryOps<NbtElement> nbtOps = registries.getOps(NbtOps.INSTANCE);
-                            ItemStack stack = ItemStack.CODEC.parse(nbtOps, itemNbt).resultOrPartial(e -> {}).orElse(ItemStack.EMPTY);
-                            if(!stack.isEmpty()) {
-                                inv.setStack(slot, stack);
-                            }
+                        } else {
+                            errorCount++;
                         }
+                    } else {
+                        errorCount++;
                     }
-
-                    be.markDirty();
-                    world.updateListeners(pos, world.getBlockState(pos), world.getBlockState(pos), 3);
-                    successCount++;
                 }
 
                 JsonObject ok = new JsonObject();
