@@ -11,6 +11,9 @@
     "entrypoints": {
         "main": [
             "com.finndog.structure_editor.StructureEditorMod"
+        ],
+        "client": [
+            "com.finndog.structure_editor.client.StructureEditorClient"
         ]
     },
     "mixins": [],

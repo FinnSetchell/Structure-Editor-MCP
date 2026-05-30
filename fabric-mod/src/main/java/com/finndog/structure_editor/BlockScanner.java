@@ -48,7 +48,7 @@ public class BlockScanner {
     // Scans all jigsaw and structure blocks in the selection, returns JSON array string.
     // This is called from the HTTP handler thread, so we submit work to the main server thread
     // and wait for the result.
-    public static String scanSelection(MinecraftServer server, SelectionManager selection, String nameFilter) {
+    public static String scanSelection(MinecraftServer server, SelectionManager.Region selection, String nameFilter) {
         if(!selection.isComplete()) {
             JsonObject err = new JsonObject();
             err.addProperty("error", "No complete selection. Use the stick wand to set pos1 (left-click) and pos2 (right-click).");
@@ -233,7 +233,7 @@ public class BlockScanner {
     }
 
     // Triggers the save operation on structure blocks in selection or at coordinates
-    public static String saveStructures(MinecraftServer server, SelectionManager selection, JsonObject request) {
+    public static String saveStructures(MinecraftServer server, SelectionManager.Region selection, JsonObject request) {
         CompletableFuture<JsonObject> future = new CompletableFuture<>();
 
         server.execute(() -> {
@@ -668,7 +668,7 @@ public class BlockScanner {
     }
 
     // Scans all containers in the selection, returns JSON array of container types and loot tables
-    public static String scanContainers(MinecraftServer server, SelectionManager selection) {
+    public static String scanContainers(MinecraftServer server, SelectionManager.Region selection) {
         if(!selection.isComplete()) {
             JsonObject err = new JsonObject();
             err.addProperty("error", "No complete selection.");
@@ -790,7 +790,7 @@ public class BlockScanner {
         }
     }
 
-    public static String scanBlocks(MinecraftServer server, SelectionManager selection, JsonArray targetBlocks) {
+    public static String scanBlocks(MinecraftServer server, SelectionManager.Region selection, JsonArray targetBlocks) {
         if(!selection.isComplete()) {
             JsonObject err = new JsonObject();
             err.addProperty("error", "No complete selection.");
@@ -854,7 +854,7 @@ public class BlockScanner {
         }
     }
 
-    public static String scanEntities(MinecraftServer server, SelectionManager selection, JsonArray targetEntities) {
+    public static String scanEntities(MinecraftServer server, SelectionManager.Region selection, JsonArray targetEntities) {
         if(!selection.isComplete()) {
             JsonObject err = new JsonObject();
             err.addProperty("error", "No complete selection.");

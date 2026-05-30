@@ -129,6 +129,22 @@ public class EditorHttpServer {
         }
     }
 
+
+    private String getRegionName(HttpExchange exchange) {
+        String query = exchange.getRequestURI().getQuery();
+        if(query != null) {
+            for(String param : query.split("&")) {
+                String[] pair = param.split("=");
+                if(pair.length > 1 && "region".equals(pair[0])) {
+                    try {
+                        return java.net.URLDecoder.decode(pair[1], java.nio.charset.StandardCharsets.UTF_8);
+                    } catch(Exception e) {}
+                }
+            }
+        }
+        return "default";
+    }
+
     //////////////////////////////
 
     // GET /health — basic liveness check
@@ -140,11 +156,12 @@ public class EditorHttpServer {
             obj.addProperty("status", "ok");
             obj.addProperty("port", config.port);
             obj.addProperty("serverReady", mcServer != null);
-            if(selection.getPos1() != null) {
-                obj.addProperty("pos1", selection.getPos1().toShortString());
+            SelectionManager.Region r = selection.getRegion("default");
+            if(r != null && r.pos1 != null) {
+                obj.addProperty("pos1", r.pos1.toShortString());
             }
-            if(selection.getPos2() != null) {
-                obj.addProperty("pos2", selection.getPos2().toShortString());
+            if(r != null && r.pos2 != null) {
+                obj.addProperty("pos2", r.pos2.toShortString());
             }
             sendJson(exchange, 200, GSON.toJson(obj));
         }
@@ -158,27 +175,42 @@ public class EditorHttpServer {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             if(!checkAuth(exchange)) return;
+            String regionName = getRegionName(exchange);
+            
             if("GET".equals(exchange.getRequestMethod())) {
+                String query = exchange.getRequestURI().getQuery();
+                if (query != null && query.contains("list=true")) {
+                    JsonObject obj = new JsonObject();
+                    for(java.util.Map.Entry<String, SelectionManager.Region> e : selection.getRegions().entrySet()) {
+                        JsonObject p = new JsonObject();
+                        p.addProperty("complete", e.getValue().isComplete());
+                        obj.add(e.getKey(), p);
+                    }
+                    sendJson(exchange, 200, GSON.toJson(obj));
+                    return;
+                }
+                
+                SelectionManager.Region r = selection.getRegion(regionName);
                 JsonObject obj = new JsonObject();
-                if(selection.getPos1() != null) {
+                if(r != null && r.pos1 != null) {
                     JsonObject p1 = new JsonObject();
-                    p1.addProperty("x", selection.getPos1().getX());
-                    p1.addProperty("y", selection.getPos1().getY());
-                    p1.addProperty("z", selection.getPos1().getZ());
+                    p1.addProperty("x", r.pos1.getX());
+                    p1.addProperty("y", r.pos1.getY());
+                    p1.addProperty("z", r.pos1.getZ());
                     obj.add("pos1", p1);
                 } else {
                     obj.add("pos1", JsonNull.INSTANCE);
                 }
-                if(selection.getPos2() != null) {
+                if(r != null && r.pos2 != null) {
                     JsonObject p2 = new JsonObject();
-                    p2.addProperty("x", selection.getPos2().getX());
-                    p2.addProperty("y", selection.getPos2().getY());
-                    p2.addProperty("z", selection.getPos2().getZ());
+                    p2.addProperty("x", r.pos2.getX());
+                    p2.addProperty("y", r.pos2.getY());
+                    p2.addProperty("z", r.pos2.getZ());
                     obj.add("pos2", p2);
                 } else {
                     obj.add("pos2", JsonNull.INSTANCE);
                 }
-                obj.addProperty("complete", selection.isComplete());
+                obj.addProperty("complete", r != null && r.isComplete());
                 sendJson(exchange, 200, GSON.toJson(obj));
             }
             else if("POST".equals(exchange.getRequestMethod())) {
@@ -186,25 +218,27 @@ public class EditorHttpServer {
                     JsonObject body = JsonParser.parseString(readBody(exchange)).getAsJsonObject();
                     if(body.has("pos1") && body.get("pos1").isJsonObject()) {
                         JsonObject p = body.getAsJsonObject("pos1");
-                        selection.setPos1(new net.minecraft.util.math.BlockPos(
+                        selection.setPos1(regionName, new net.minecraft.util.math.BlockPos(
                             p.get("x").getAsInt(), p.get("y").getAsInt(), p.get("z").getAsInt()
                         ));
                     }
                     if(body.has("pos2") && body.get("pos2").isJsonObject()) {
                         JsonObject p = body.getAsJsonObject("pos2");
-                        selection.setPos2(new net.minecraft.util.math.BlockPos(
+                        selection.setPos2(regionName, new net.minecraft.util.math.BlockPos(
                             p.get("x").getAsInt(), p.get("y").getAsInt(), p.get("z").getAsInt()
                         ));
                     }
+                    SelectionManager.Region r = selection.getRegion(regionName);
                     JsonObject ok = new JsonObject();
                     ok.addProperty("success", true);
-                    ok.addProperty("complete", selection.isComplete());
+                    ok.addProperty("complete", r.isComplete());
                     sendJson(exchange, 200, GSON.toJson(ok));
-                    if(selection.isComplete()) {
-                        broadcastActionBar("Selection complete");
+                    if(r.isComplete()) {
+                        broadcastActionBar("Selection '" + regionName + "' complete");
                     } else {
-                        broadcastActionBar("Selection updated");
+                        broadcastActionBar("Selection '" + regionName + "' updated");
                     }
+                    StructureEditorMod.syncSelectionsToAll();
                 } catch(Exception e) {
                     sendJson(exchange, 400, GSON.toJson(errorJson("Bad JSON: " + e.getMessage())));
                 }
@@ -234,7 +268,7 @@ public class EditorHttpServer {
                 }
             }
 
-            String result = BlockScanner.scanSelection(mcServer, selection, nameFilter);
+            String result = BlockScanner.scanSelection(mcServer, selection.getOrCreateRegion(getRegionName(exchange)), nameFilter);
             sendJson(exchange, 200, result);
         }
     }
@@ -249,7 +283,7 @@ public class EditorHttpServer {
                 exchange.sendResponseHeaders(405, -1);
                 return;
             }
-            String result = BlockScanner.scanContainers(mcServer, selection);
+            String result = BlockScanner.scanContainers(mcServer, selection.getOrCreateRegion(getRegionName(exchange)));
             sendJson(exchange, 200, result);
         }
     }
@@ -318,7 +352,7 @@ public class EditorHttpServer {
             try {
                 String bodyStr = readBody(exchange);
                 JsonObject body = bodyStr.trim().isEmpty() ? new JsonObject() : JsonParser.parseString(bodyStr).getAsJsonObject();
-                String result = BlockScanner.saveStructures(mcServer, selection, body);
+                String result = BlockScanner.saveStructures(mcServer, selection.getOrCreateRegion(getRegionName(exchange)), body);
                 sendJson(exchange, 200, result);
                 
                 try {
@@ -481,7 +515,7 @@ public class EditorHttpServer {
             }
             try {
                 JsonArray body = JsonParser.parseString(readBody(exchange)).getAsJsonArray();
-                String result = BlockScanner.scanBlocks(mcServer, selection, body);
+                String result = BlockScanner.scanBlocks(mcServer, selection.getOrCreateRegion(getRegionName(exchange)), body);
                 sendJson(exchange, 200, result);
             } catch(Exception e) {
                 sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
@@ -500,7 +534,7 @@ public class EditorHttpServer {
             }
             try {
                 JsonArray body = JsonParser.parseString(readBody(exchange)).getAsJsonArray();
-                String result = BlockScanner.scanEntities(mcServer, selection, body);
+                String result = BlockScanner.scanEntities(mcServer, selection.getOrCreateRegion(getRegionName(exchange)), body);
                 sendJson(exchange, 200, result);
             } catch(Exception e) {
                 sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
