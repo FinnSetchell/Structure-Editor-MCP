@@ -16,7 +16,9 @@
             "com.finndog.structure_editor.client.StructureEditorClient"
         ]
     },
-    "mixins": [],
+    "mixins": [
+        "structure_editor.mixins.json"
+    ],
     "depends": {
         "fabricloader": ">=0.19.0",
         "fabric-api": "*",

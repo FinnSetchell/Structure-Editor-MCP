@@ -1,0 +1,14 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.finndog.structure_editor.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+  ],
+  "client": [
+    "client.BlockEntityMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
