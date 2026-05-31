@@ -10,7 +10,6 @@ import java.util.Map;
 public class StructureEditorClient implements ClientModInitializer {
 
     private static Map<String, SyncSelectionsPayload.RegionData> clientRegions = new HashMap<>();
-    private static String activeRegion = "default";
 
     @Override
     public void onInitializeClient() {
@@ -19,16 +18,11 @@ public class StructureEditorClient implements ClientModInitializer {
         ClientPlayNetworking.registerGlobalReceiver(SyncSelectionsPayload.ID, (payload, context) -> {
             context.client().execute(() -> {
                 clientRegions = payload.regions();
-                activeRegion = payload.activeRegion();
             });
         });
     }
 
     public static Map<String, SyncSelectionsPayload.RegionData> getClientRegions() {
         return clientRegions;
-    }
-
-    public static String getActiveRegion() {
-        return activeRegion;
     }
 }

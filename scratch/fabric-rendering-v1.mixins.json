@@ -1,0 +1,25 @@
+{
+  "required": true,
+  "package": "net.fabricmc.fabric.mixin.client.rendering",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "ArmorFeatureRendererMixin",
+    "AtlasSourceManagerAccessor",
+    "BlockColorsMixin",
+    "BlockEntityRendererFactoriesMixin",
+    "CapeFeatureRendererMixin",
+    "ClientWorldMixin",
+    "DimensionEffectsAccessor",
+    "EntityModelLayersAccessor",
+    "EntityModelsMixin",
+    "EntityRenderersMixin",
+    "InGameHudMixin",
+    "LivingEntityRendererAccessor",
+    "SpecialModelTypesMixin",
+    "TooltipComponentMixin",
+    "WorldRendererMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

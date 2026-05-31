@@ -36,7 +36,12 @@ public class SelectionRenderer {
         poseStack.translate(-camPos.x, -camPos.y, -camPos.z);
 
         VertexConsumer lines = consumers.getBuffer(RenderLayer.getLines());
-        String active = StructureEditorClient.getActiveRegion();
+        
+        net.minecraft.client.network.ClientPlayerEntity player = net.minecraft.client.MinecraftClient.getInstance().player;
+        String active = "default";
+        if (player != null) {
+            active = com.finndog.structure_editor.StructureEditorMod.getWandRegion(player.getMainHandStack()).orElse("default");
+        }
 
         for (Map.Entry<String, SyncSelectionsPayload.RegionData> entry : regions.entrySet()) {
             SyncSelectionsPayload.RegionData data = entry.getValue();

@@ -10,7 +10,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
-public record SyncSelectionsPayload(Map<String, RegionData> regions, String activeRegion) implements CustomPayload {
+public record SyncSelectionsPayload(Map<String, RegionData> regions) implements CustomPayload {
 
     public static final CustomPayload.Id<SyncSelectionsPayload> ID = new CustomPayload.Id<>(Identifier.of("structure_editor", "sync_selections"));
 
@@ -24,7 +24,6 @@ public record SyncSelectionsPayload(Map<String, RegionData> regions, String acti
 
     public static final PacketCodec<RegistryByteBuf, SyncSelectionsPayload> CODEC = PacketCodec.tuple(
         PacketCodecs.map(HashMap::new, PacketCodecs.STRING, REGION_CODEC), SyncSelectionsPayload::regions,
-        PacketCodecs.STRING, SyncSelectionsPayload::activeRegion,
         SyncSelectionsPayload::new
     );
 
