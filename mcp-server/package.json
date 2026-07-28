@@ -1,6 +1,6 @@
 {
   "name": "structure-editor-mcp",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "MCP server for editing Minecraft jigsaw and structure blocks via the Structure Editor mod",
   "type": "module",
   "main": "dist/index.js",
