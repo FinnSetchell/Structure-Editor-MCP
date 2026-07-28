@@ -77,10 +77,16 @@ server.tool(
 server.tool(
     "get_selection",
     "Get the current in-world selection (pos1 and pos2). The player sets this with the stick wand in-game, or you can set it programmatically with set_selection.",
-    {},
-    async () => {
-        const data = await modGet("/selection");
-        return textResult(data);
+    {
+        region: z.string().optional().describe("Optional region name to get the selection for. Defaults to 'default'."),
+        name_filter: z.string().optional().describe("Optional filter for results."),
+    },
+    async ({ region, name_filter }) => {
+        let url = "/scan?format=json";
+        if (region) url += `&region=${encodeURIComponent(region)}`;
+        if (name_filter) url += `&name_filter=${encodeURIComponent(name_filter)}`;
+        const data = await modGet(url);
+        return textResult(JSON.stringify(data, null, 2));
     }
 );
 
@@ -98,12 +104,15 @@ server.tool(
             y: z.number().int(),
             z: z.number().int(),
         }).optional().describe("Second corner of the selection"),
+        region: z.string().optional().describe("Optional region name to set the selection for. Defaults to 'default'."),
     },
-    async ({ pos1, pos2 }) => {
+    async ({ pos1, pos2, region }) => {
         const body: Record<string, unknown> = {};
         if (pos1) body.pos1 = pos1;
         if (pos2) body.pos2 = pos2;
-        const data = await modPost("/selection", body);
+        let url = "/selection";
+        if (region) url += `?region=${encodeURIComponent(region)}`;
+        const data = await modPost(url, body);
         return textResult(data);
     }
 );
@@ -118,12 +127,14 @@ Optional 'name_filter' parameter: only return blocks whose name, pool, or target
     {
         format: z.enum(["compact", "json"]).optional().default("compact").describe("Output format. Use 'compact' (default) to save context tokens, or 'json' for raw structured data."),
         name_filter: z.string().optional().describe("Only return blocks containing this string in their name, pool, or target properties."),
+        region: z.string().optional().describe("Optional region name to scan. Defaults to 'default'."),
     },
-    async ({ format, name_filter }) => {
+    async ({ format, name_filter, region }) => {
         let url = "/scan";
-        if (name_filter) {
-            url += "?name=" + encodeURIComponent(name_filter);
-        }
+        const params = new URLSearchParams();
+        if (name_filter) params.append("name", name_filter);
+        if (region) params.append("region", region);
+        if (params.toString()) url += "?" + params.toString();
         const data = await modGet(url) as { count: number; blocks: Array<Record<string, unknown>> };
         
         if (format === "json") {
@@ -178,23 +189,20 @@ Optional 'name_filter' parameter: only return blocks whose name, pool, or target
 server.tool(
     "scan_containers",
     `Scan the currently selected region and return all containers (chests, barrels, etc) and their loot tables. Returns highly compressed output to save tokens.`,
-    {},
-    async () => {
-        const data = await modGet("/scan/containers") as { count: number; containers?: Array<Record<string, unknown>>, error?: string };
+    {
+        region: z.string().optional().describe("Optional region name to scan. Defaults to 'default'."),
+    },
+    async ({ region }) => {
+        let url = "/scan/containers";
+        if (region) url += `?region=${encodeURIComponent(region)}`;
+        const data = await modGet(url) as { count: number; containers?: Array<Record<string, unknown>>, error?: string };
         if (data.error) {
             return textResult(data);
         }
         if (!data.containers || data.containers.length === 0) {
             return textResult({ count: 0, message: "No containers found in the selection region." });
         }
-        const lines: string[] = [];
-        lines.push(`Scanned ${data.count} container(s) in selection:`);
-        for (const c of data.containers) {
-            const loot = c.loot_table ? `loot_table: ${c.loot_table}` : `loot_table: null`;
-            const seed = c.loot_table_seed ? ` | seed: ${c.loot_table_seed}` : '';
-            lines.push(`[${c.type}] at (${c.x}, ${c.y}, ${c.z}) | ${loot}${seed}`);
-        }
-        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+        return textResult(data);
     }
 );
 
@@ -288,8 +296,8 @@ Useful for quickly changing structure namespacing/directory paths across many bl
 
 server.tool(
     "bulk_replace_string",
-    `Scan the selected region and replace a substring across all jigsaw/structure block string fields.
-For example, replace "mymod:old_dir/" with "mymod:new_dir/" across all name/target/pool fields.
+    `Scan the selected region and replace a substring across all jigsaw/structure block string fields AND container loot tables.
+For example, replace "mymod:old_dir/" with "mymod:new_dir/" across all name/target/pool fields and container LootTables.
 Returns a summary of what changed.`,
     {
         find: z.string().describe("Substring to search for in all string fields"),
@@ -299,46 +307,82 @@ Returns a summary of what changed.`,
             .describe("Which fields to apply the replacement to (default: name, target, pool, final_state)"),
         dry_run: z.boolean().default(false)
             .describe("If true, returns what WOULD change without actually applying edits"),
+        region: z.string().optional().describe("Optional region name to perform bulk replace on. Defaults to 'default'."),
     },
-    async ({ find, replace, fields_to_check, dry_run }) => {
-        // First scan
-        const scanData = await modGet("/scan") as { count: number; blocks: Array<Record<string, unknown>> };
+    async ({ find, replace, fields_to_check, dry_run, region }) => {
+        // First scan jigsaws and structures
+        let url = "/scan";
+        if (region) url += `?region=${encodeURIComponent(region)}`;
+        const scanData = await modGet(url) as { count: number; blocks: Array<Record<string, unknown>> };
 
-        if (!scanData.blocks || scanData.blocks.length === 0) {
-            return textResult({ message: "No jigsaw/structure blocks in selection", changed: 0 });
+        // Then scan containers
+        let containerUrl = "/scan/containers";
+        if (region) containerUrl += `?region=${encodeURIComponent(region)}`;
+        const containerScanData = await modGet(containerUrl) as { count: number; containers?: Array<Record<string, unknown>> };
+
+        if ((!scanData.blocks || scanData.blocks.length === 0) && (!containerScanData.containers || containerScanData.containers.length === 0)) {
+            return textResult({ message: "No jigsaw/structure blocks or containers in selection", changed: 0 });
         }
 
         const edits: Array<{ x: number; y: number; z: number; fields: Record<string, string> }> = [];
+        const containerEdits: Array<{ x: number; y: number; z: number; loot_table: string; loot_table_seed?: number }> = [];
         const changes: Array<{ pos: string; field: string; from: string; to: string }> = [];
 
-        for (const block of scanData.blocks) {
-            const blockEdits: Record<string, string> = {};
+        // Process Jigsaw/Structure blocks
+        if (scanData.blocks) {
+            for (const block of scanData.blocks) {
+                const blockEdits: Record<string, string> = {};
 
-            for (const field of fields_to_check) {
-                const val = block[field];
-                if (typeof val === "string" && val.includes(find)) {
-                    const newVal = val.replaceAll(find, replace);
-                    blockEdits[field] = newVal;
-                    changes.push({
-                        pos: `${block.x},${block.y},${block.z}`,
-                        field,
-                        from: val,
-                        to: newVal,
+                for (const field of fields_to_check) {
+                    const val = block[field];
+                    if (typeof val === "string" && val.includes(find)) {
+                        const newVal = val.replaceAll(find, replace);
+                        blockEdits[field] = newVal;
+                        changes.push({
+                            pos: `${block.x},${block.y},${block.z}`,
+                            field,
+                            from: val,
+                            to: newVal,
+                        });
+                    }
+                }
+
+                if (Object.keys(blockEdits).length > 0) {
+                    edits.push({
+                        x: block.x as number,
+                        y: block.y as number,
+                        z: block.z as number,
+                        fields: blockEdits,
                     });
                 }
             }
+        }
 
-            if (Object.keys(blockEdits).length > 0) {
-                edits.push({
-                    x: block.x as number,
-                    y: block.y as number,
-                    z: block.z as number,
-                    fields: blockEdits,
-                });
+        // Process Containers
+        if (containerScanData && containerScanData.containers) {
+            for (const container of containerScanData.containers) {
+                const lt = container.loot_table;
+                if (typeof lt === "string" && lt.includes(find)) {
+                    const newLt = lt.replaceAll(find, replace);
+                    const seed = typeof container.loot_table_seed === "number" ? container.loot_table_seed : 0;
+                    containerEdits.push({
+                        x: container.x as number,
+                        y: container.y as number,
+                        z: container.z as number,
+                        loot_table: newLt,
+                        loot_table_seed: seed
+                    });
+                    changes.push({
+                        pos: `${container.x},${container.y},${container.z}`,
+                        field: "loot_table",
+                        from: lt,
+                        to: newLt,
+                    });
+                }
             }
         }
 
-        if (dry_run || edits.length === 0) {
+        if (dry_run || (edits.length === 0 && containerEdits.length === 0)) {
             return textResult({
                 dry_run,
                 would_change: changes.length,
@@ -346,11 +390,21 @@ Returns a summary of what changed.`,
             });
         }
 
-        const result = await modPost("/batch", edits);
+        let batch_result = null;
+        if (edits.length > 0) {
+            batch_result = await modPost("/batch", edits);
+        }
+        
+        let container_batch_result = null;
+        if (containerEdits.length > 0) {
+            container_batch_result = await modPost("/container/batch", containerEdits);
+        }
+
         return textResult({
             changed: changes.length,
             changes,
-            batch_result: result,
+            batch_result,
+            container_batch_result
         });
     }
 );
@@ -366,15 +420,18 @@ Provide x, y, and z to only trigger a specific structure block. Leave them out t
         x: z.number().int().optional().describe("Optional X coordinate of the structure block to save"),
         y: z.number().int().optional().describe("Optional Y coordinate of the structure block to save"),
         z: z.number().int().optional().describe("Optional Z coordinate of the structure block to save"),
+        region: z.string().optional().describe("Optional region name to save structures in. Defaults to 'default'."),
     },
-    async ({ x, y, z: zCoord }) => {
+    async ({ x, y, z: zCoord, region }) => {
         const body: Record<string, number> = {};
         if (x !== undefined && y !== undefined && zCoord !== undefined) {
             body.x = x;
             body.y = y;
             body.z = zCoord;
         }
-        const data = await modPost("/save", body);
+        let url = "/save";
+        if (region) url += `?region=${encodeURIComponent(region)}`;
+        const data = await modPost(url, body);
         return textResult(data);
     }
 );
@@ -387,12 +444,16 @@ server.tool(
 Returns all non-empty slots with item id and count, plus loot_table and loot_table_seed if set.
 If a loot table is active, items won't appear until a player opens the container for the first time.`,
     {
-        x: z.number().int().describe("X coordinate of the container"),
-        y: z.number().int().describe("Y coordinate of the container"),
-        z: z.number().int().describe("Z coordinate of the container"),
+        x: z.number().int().optional().describe("X coordinate of the container (if targeting by block pos)"),
+        y: z.number().int().optional().describe("Y coordinate of the container (if targeting by block pos)"),
+        z: z.number().int().optional().describe("Z coordinate of the container (if targeting by block pos)"),
+        uuid: z.string().optional().describe("UUID of the entity container (like Minecart with Chest). Mutually exclusive with x/y/z."),
     },
-    async ({ x, y, z: zCoord }) => {
-        const data = await modGet(`/container?x=${x}&y=${y}&z=${zCoord}`);
+    async ({ x, y, z: zCoord, uuid }) => {
+        let url = `/container?`;
+        if (uuid !== undefined) url += `uuid=${uuid}`;
+        else url += `x=${x}&y=${y}&z=${zCoord}`;
+        const data = await modGet(url);
         return textResult(data);
     }
 );
@@ -407,9 +468,10 @@ To set a loot table: provide 'loot_table' string (e.g. 'minecraft:chests/simple_
 
 Supported containers: chest, trapped_chest, barrel, hopper, dispenser, dropper, shulker_box.`,
     {
-        x: z.number().int().describe("X coordinate of the container"),
-        y: z.number().int().describe("Y coordinate of the container"),
-        z: z.number().int().describe("Z coordinate of the container"),
+        x: z.number().int().optional().describe("X coordinate of the container (if targeting by block pos)"),
+        y: z.number().int().optional().describe("Y coordinate of the container (if targeting by block pos)"),
+        z: z.number().int().optional().describe("Z coordinate of the container (if targeting by block pos)"),
+        uuid: z.string().optional().describe("UUID of the entity container (like Minecart with Chest). Mutually exclusive with x/y/z."),
         slots: z.array(z.object({
             slot: z.number().int().describe("Slot index (0-based)"),
             id: z.string().describe("Item identifier, e.g. 'minecraft:iron_sword'"),
@@ -419,8 +481,10 @@ Supported containers: chest, trapped_chest, barrel, hopper, dispenser, dropper, 
         loot_table: z.string().optional().describe("Loot table identifier to assign, e.g. 'minecraft:chests/simple_dungeon'. Mutually exclusive with slots."),
         loot_table_seed: z.number().optional().describe("Seed for loot table generation. Use 0 for random."),
     },
-    async ({ x, y, z: zCoord, slots, loot_table, loot_table_seed }) => {
-        const body: Record<string, unknown> = { x, y, z: zCoord };
+    async ({ x, y, z: zCoord, uuid, slots, loot_table, loot_table_seed }) => {
+        const body: Record<string, unknown> = {};
+        if (uuid !== undefined) body.uuid = uuid;
+        else { body.x = x; body.y = y; body.z = zCoord; }
         if (loot_table !== undefined) {
             body.loot_table = loot_table;
             if (loot_table_seed !== undefined) body.loot_table_seed = loot_table_seed;
@@ -432,14 +496,47 @@ Supported containers: chest, trapped_chest, barrel, hopper, dispenser, dropper, 
     }
 );
 
+// --- block NBT ---
+
+server.tool(
+    "get_block_nbt",
+    `Get the raw NBT data of a block entity (like suspicious sand, decorated pots, spawners, etc) at a given position.`,
+    {
+        x: z.number().int().describe("X coordinate of the block"),
+        y: z.number().int().describe("Y coordinate of the block"),
+        z: z.number().int().describe("Z coordinate of the block"),
+    },
+    async ({ x, y, z: zCoord }) => {
+        const data = await modGet(`/nbt/block?x=${x}&y=${y}&z=${zCoord}`);
+        return textResult(data);
+    }
+);
+
+server.tool(
+    "set_block_nbt",
+    `Merge the given NBT data into a block entity at a given position.
+This modifies the existing NBT by replacing or adding the provided fields. Existing fields not specified in the payload remain untouched.`,
+    {
+        x: z.number().int().describe("X coordinate of the block"),
+        y: z.number().int().describe("Y coordinate of the block"),
+        z: z.number().int().describe("Z coordinate of the block"),
+        nbt: z.record(z.unknown()).describe("The NBT fields to merge into the block entity. Format as a flat or nested JSON object corresponding to the NBT structure."),
+    },
+    async ({ x, y, z: zCoord, nbt }) => {
+        const data = await modPost(`/nbt/block`, { x, y, z: zCoord, nbt });
+        return textResult(data);
+    }
+);
+
 server.tool(
     "batch_write_containers",
     `Write items or assign loot tables to multiple containers in a single call. Much faster and uses fewer tokens than calling write_container multiple times.`,
     {
         containers: z.array(z.object({
-            x: z.number().int().describe("X coordinate of the container"),
-            y: z.number().int().describe("Y coordinate of the container"),
-            z: z.number().int().describe("Z coordinate of the container"),
+            x: z.number().int().optional().describe("X coordinate of the container"),
+            y: z.number().int().optional().describe("Y coordinate of the container"),
+            z: z.number().int().optional().describe("Z coordinate of the container"),
+            uuid: z.string().optional().describe("UUID of the entity container (like Minecart with Chest). Mutually exclusive with x/y/z."),
             slots: z.array(z.object({
                 slot: z.number().int().describe("Slot index (0-based)"),
                 id: z.string().describe("Item identifier, e.g. 'minecraft:iron_sword'"),
@@ -461,9 +558,12 @@ server.tool(
     `Scan the currently selected region for specific blocks. Returns their coordinates.`,
     {
         blocks: z.array(z.string()).describe("Array of block IDs to search for, e.g. ['minecraft:diamond_ore']"),
+        region: z.string().optional().describe("Optional region name to scan blocks in. Defaults to 'default'."),
     },
-    async ({ blocks }) => {
-        const data = await modPost("/scan/blocks", blocks) as any;
+    async ({ blocks, region }) => {
+        let url = "/scan/blocks";
+        if (region) url += `?region=${encodeURIComponent(region)}`;
+        const data = await modPost(url, blocks) as any;
         if (data.error) return textResult(data);
         if (!data.blocks || data.blocks.length === 0) return textResult({ count: 0, message: "No matching blocks found." });
         
@@ -482,9 +582,12 @@ server.tool(
     `Scan the currently selected region for specific entities. Returns their coordinates and basic info.`,
     {
         entities: z.array(z.string()).optional().describe("Array of entity IDs to search for, e.g. ['minecraft:zombie']. Omit or pass empty array to return all entities."),
+        region: z.string().optional().describe("Optional region name to scan entities in. Defaults to 'default'."),
     },
-    async ({ entities }) => {
-        const data = await modPost("/scan/entities", entities || []) as any;
+    async ({ entities, region }) => {
+        let url = "/scan/entities";
+        if (region) url += `?region=${encodeURIComponent(region)}`;
+        const data = await modPost(url, entities || []) as any;
         if (data.error) return textResult(data);
         if (!data.entities || data.entities.length === 0) return textResult({ count: 0, message: "No matching entities found." });
         
@@ -571,6 +674,87 @@ Provides seamless synchronization of your building templates without needing SFT
         } catch (e) {
             return textResult({ error: `Download failed: ${String(e)}` });
         }
+    }
+);
+
+// --- blocks read/write ---
+
+server.tool(
+    "get_blocks",
+    `Read blocks from the world. If you provide 'positions', it returns the blocks at those exact coordinates.
+If you omit 'positions', it scans the currently selected region (or 'region' param) and returns a palette-compressed JSON of all blocks in that region to save context tokens.`,
+    {
+        positions: z.array(z.object({
+            x: z.number().int(),
+            y: z.number().int(),
+            z: z.number().int()
+        })).optional().describe("Array of specific coordinates to read. If omitted, the entire region is scanned."),
+        region: z.string().optional().describe("Optional region name to scan if positions is omitted. Defaults to 'default'."),
+    },
+    async ({ positions, region }) => {
+        const body: Record<string, unknown> = {};
+        if (positions !== undefined) body.positions = positions;
+        if (region !== undefined) body.region = region;
+        const data = await modPost("/block/get", body);
+        return textResult(data);
+    }
+);
+
+server.tool(
+    "set_blocks",
+    `Set blocks in the world. This will NOT trigger block updates or physics (e.g. water won't flow, torches won't pop off).
+You can pass block NBT data. The previous block states are saved automatically and can be undone using undo_last_write.
+By default, placing blocks outside the currently selected region is blocked for safety.`,
+    {
+        blocks: z.array(z.object({
+            x: z.number().int(),
+            y: z.number().int(),
+            z: z.number().int(),
+            block: z.string().describe("Block state string, e.g. 'minecraft:spruce_stairs[facing=north,half=bottom]'"),
+            nbt: z.record(z.unknown()).optional().describe("Optional NBT data for block entities"),
+        })).describe("Array of block updates. Max 10,000 blocks per call."),
+        allow_outside_selection: z.boolean().optional().default(false).describe("If true, allows setting blocks outside the active selection bounds."),
+        region: z.string().optional().describe("Optional region name to check bounds against. Defaults to 'default'."),
+    },
+    async ({ blocks, allow_outside_selection, region }) => {
+        const body: Record<string, unknown> = { blocks, allow_outside_selection };
+        if (region !== undefined) body.region = region;
+        const data = await modPost("/block/set", body);
+        return textResult(data);
+    }
+);
+
+server.tool(
+    "replace_blocks",
+    `Bulk replace specific block IDs within a region with a new block ID.
+Example: replace all 'minecraft:air' with 'minecraft:structure_void'.
+No block updates/physics will occur. Previous block states are saved automatically.`,
+    {
+        find: z.array(z.string()).describe("Array of block IDs to replace, e.g. ['minecraft:air', 'minecraft:water']"),
+        replace: z.string().describe("The new block state string to place, e.g. 'minecraft:structure_void'"),
+        region: z.string().optional().describe("Optional region name to search in. Defaults to 'default'."),
+        dry_run: z.boolean().optional().default(false).describe("If true, only counts the matches and returns a small sample, but does not modify the world."),
+        max_blocks: z.number().int().optional().describe("Maximum number of blocks to replace. Defaults to all matches."),
+    },
+    async ({ find, replace, region, dry_run, max_blocks }) => {
+        const body: Record<string, unknown> = { find, replace, dry_run };
+        if (region !== undefined) body.region = region;
+        if (max_blocks !== undefined) body.max_blocks = max_blocks;
+        const data = await modPost("/block/replace", body);
+        return textResult(data);
+    }
+);
+
+server.tool(
+    "undo_last_write",
+    `Undo a previous set_blocks or replace_blocks operation using the undo_token returned by that operation.
+Can only be used once per token.`,
+    {
+        undo_token: z.string().describe("The token returned by a previous set_blocks or replace_blocks call"),
+    },
+    async ({ undo_token }) => {
+        const data = await modPost("/block/undo", { undo_token });
+        return textResult(data);
     }
 );
 

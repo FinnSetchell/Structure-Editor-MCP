@@ -48,6 +48,11 @@ public class EditorHttpServer {
             server.createContext("/scan/blocks", new BlockScanHandler());
             server.createContext("/scan/entities", new EntityScanHandler());
             server.createContext("/structure/palette", new StructurePaletteHandler());
+            server.createContext("/nbt/block", new BlockNbtHandler());
+            server.createContext("/block/get", new BlockGetHandler());
+            server.createContext("/block/set", new BlockSetHandler());
+            server.createContext("/block/replace", new BlockReplaceHandler());
+            server.createContext("/block/undo", new BlockUndoHandler());
             server.setExecutor(Executors.newFixedThreadPool(4));
             server.start();
             StructureEditorMod.LOGGER.info("Structure Editor HTTP server started on http://{}:{}", config.host, config.port);
@@ -568,6 +573,132 @@ public class EditorHttpServer {
             }
             String result = BlockScanner.getStructurePalette(mcServer, name);
             sendJson(exchange, 200, result);
+        }
+    }
+
+    class BlockNbtHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            String method = exchange.getRequestMethod();
+            if ("GET".equals(method)) {
+                String query = exchange.getRequestURI().getQuery();
+                JsonObject req = new JsonObject();
+                if(query != null) {
+                    for(String param : query.split("&")) {
+                        String[] kv = param.split("=");
+                        if(kv.length == 2) {
+                            if(kv[0].equals("x") || kv[0].equals("y") || kv[0].equals("z")) {
+                                req.addProperty(kv[0], Integer.parseInt(kv[1]));
+                            }
+                        }
+                    }
+                }
+                String result = BlockScanner.readBlockNbt(mcServer, req);
+                sendJson(exchange, 200, result);
+            } else if ("POST".equals(method)) {
+                try {
+                    JsonObject body = JsonParser.parseString(readBody(exchange)).getAsJsonObject();
+                    String result = BlockScanner.writeBlockNbt(mcServer, body);
+                    sendJson(exchange, 200, result);
+                } catch(Exception e) {
+                    sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
+                }
+            } else {
+                exchange.sendResponseHeaders(405, -1);
+            }
+        }
+    }
+
+    class BlockGetHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if ("POST".equals(exchange.getRequestMethod())) {
+                try {
+                    String bodyStr = readBody(exchange);
+                    JsonObject body = bodyStr.isEmpty() ? new JsonObject() : JsonParser.parseString(bodyStr).getAsJsonObject();
+                    String regionName = body.has("region") ? body.get("region").getAsString() : "default";
+                    SelectionManager.Region r = selection.getRegion(regionName);
+                    JsonArray posList = body.has("positions") ? body.getAsJsonArray("positions") : null;
+                    String result = BlockScanner.getBlocks(mcServer, r, posList);
+                    sendJson(exchange, 200, result);
+                } catch(Exception e) {
+                    sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
+                }
+            } else {
+                exchange.sendResponseHeaders(405, -1);
+            }
+        }
+    }
+
+    class BlockSetHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if ("POST".equals(exchange.getRequestMethod())) {
+                try {
+                    JsonObject body = JsonParser.parseString(readBody(exchange)).getAsJsonObject();
+                    JsonArray blocks = body.getAsJsonArray("blocks");
+                    boolean allowOutside = body.has("allow_outside_selection") && body.get("allow_outside_selection").getAsBoolean();
+                    String regionName = body.has("region") ? body.get("region").getAsString() : "default";
+                    SelectionManager.Region r = selection.getRegion(regionName);
+                    String result = BlockScanner.setBlocks(mcServer, blocks, r, allowOutside);
+                    sendJson(exchange, 200, result);
+                } catch(Exception e) {
+                    sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
+                }
+            } else {
+                exchange.sendResponseHeaders(405, -1);
+            }
+        }
+    }
+
+    class BlockReplaceHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if ("POST".equals(exchange.getRequestMethod())) {
+                try {
+                    JsonObject body = JsonParser.parseString(readBody(exchange)).getAsJsonObject();
+                    String regionName = body.has("region") ? body.get("region").getAsString() : "default";
+                    SelectionManager.Region r = selection.getRegion(regionName);
+                    JsonArray findIds = body.getAsJsonArray("find");
+                    String replaceId = body.get("replace").getAsString();
+                    boolean dryRun = !body.has("dry_run") || body.get("dry_run").getAsBoolean();
+                    int maxBlocks = body.has("max_blocks") ? body.get("max_blocks").getAsInt() : Integer.MAX_VALUE;
+                    String result = BlockScanner.replaceBlocks(mcServer, r, findIds, replaceId, dryRun, maxBlocks);
+                    sendJson(exchange, 200, result);
+                } catch(Exception e) {
+                    sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
+                }
+            } else {
+                exchange.sendResponseHeaders(405, -1);
+            }
+        }
+    }
+
+    class BlockUndoHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if ("POST".equals(exchange.getRequestMethod())) {
+                try {
+                    JsonObject body = JsonParser.parseString(readBody(exchange)).getAsJsonObject();
+                    String token = body.get("undo_token").getAsString();
+                    String result = BlockScanner.undoLastWrite(mcServer, token);
+                    sendJson(exchange, 200, result);
+                } catch(Exception e) {
+                    sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
+                }
+            } else {
+                exchange.sendResponseHeaders(405, -1);
+            }
         }
     }
 }
