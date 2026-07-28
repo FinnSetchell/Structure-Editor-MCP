@@ -3,10 +3,13 @@
   "minVersion": "0.8",
   "package": "com.finndog.structure_editor.mixin",
   "compatibilityLevel": "JAVA_21",
+  "refmap": "client-structure-editor-refmap.json",
   "mixins": [
+    "LootableContainerBlockEntityMixin"
   ],
   "client": [
-    "client.BlockEntityMixin"
+    "client.JigsawScreenMixin",
+    "client.StructureScreenMixin"
   ],
   "injectors": {
     "defaultRequire": 1

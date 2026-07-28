@@ -734,6 +734,9 @@ public class EditorHttpServer {
                 
                 java.nio.file.Files.writeString(targetFile.toPath(), contentStr, StandardCharsets.UTF_8);
                 
+                // Automatically reload datapacks so the new loot table is available
+                mcServer.getCommandManager().executeWithPrefix(mcServer.getCommandSource(), "reload");
+                
                 JsonObject ok = new JsonObject();
                 ok.addProperty("success", true);
                 ok.addProperty("path", targetFile.getCanonicalPath());
