@@ -17,7 +17,8 @@
         ]
     },
     "mixins": [
-        "structure_editor.mixins.json"
+        "structure_editor.mixins.json",
+        "structure_editor.client.mixins.json"
     ],
     "depends": {
         "fabricloader": ">=0.19.0",

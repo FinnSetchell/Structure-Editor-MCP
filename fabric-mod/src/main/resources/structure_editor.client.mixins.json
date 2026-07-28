@@ -1,0 +1,14 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.finndog.structure_editor.mixin.client",
+  "compatibilityLevel": "JAVA_21",
+  "refmap": "client-structure-editor-refmap.json",
+  "client": [
+    "JigsawScreenMixin",
+    "StructureScreenMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
