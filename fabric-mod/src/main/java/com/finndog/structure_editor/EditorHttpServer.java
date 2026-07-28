@@ -53,6 +53,7 @@ public class EditorHttpServer {
             server.createContext("/block/set", new BlockSetHandler());
             server.createContext("/block/replace", new BlockReplaceHandler());
             server.createContext("/block/undo", new BlockUndoHandler());
+            server.createContext("/file/write", new FileWriteHandler());
             server.setExecutor(Executors.newFixedThreadPool(4));
             server.start();
             StructureEditorMod.LOGGER.info("Structure Editor HTTP server started on http://{}:{}", config.host, config.port);
@@ -698,6 +699,47 @@ public class EditorHttpServer {
                 }
             } else {
                 exchange.sendResponseHeaders(405, -1);
+            }
+        }
+    }
+    class FileWriteHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            try {
+                JsonObject body = JsonParser.parseString(readBody(exchange)).getAsJsonObject();
+                if(!body.has("path") || !body.has("content")) {
+                    sendJson(exchange, 400, GSON.toJson(errorJson("Missing 'path' or 'content'")));
+                    return;
+                }
+                String pathStr = body.get("path").getAsString();
+                String contentStr = body.get("content").getAsString();
+                
+                File baseDir = net.fabricmc.loader.api.FabricLoader.getInstance().getGameDir().toFile();
+                File targetFile = new File(baseDir, pathStr);
+                
+                if(!targetFile.getCanonicalPath().startsWith(baseDir.getCanonicalPath())) {
+                    sendJson(exchange, 403, GSON.toJson(errorJson("Access denied: Cannot write outside server root")));
+                    return;
+                }
+                
+                if(!targetFile.getParentFile().exists()) {
+                    targetFile.getParentFile().mkdirs();
+                }
+                
+                java.nio.file.Files.writeString(targetFile.toPath(), contentStr, StandardCharsets.UTF_8);
+                
+                JsonObject ok = new JsonObject();
+                ok.addProperty("success", true);
+                ok.addProperty("path", targetFile.getCanonicalPath());
+                sendJson(exchange, 200, GSON.toJson(ok));
+            } catch(Exception e) {
+                sendJson(exchange, 500, GSON.toJson(errorJson("Error writing file: " + e.getMessage())));
             }
         }
     }

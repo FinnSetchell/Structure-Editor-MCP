@@ -436,6 +436,24 @@ Provide x, y, and z to only trigger a specific structure block. Leave them out t
     }
 );
 
+// --- file writing ---
+
+server.tool(
+    "write_server_file",
+    `Write a file directly to the server's filesystem.
+Highly recommended for creating and saving Loot Tables, Advancements, Predicates, or any custom datapack JSONs directly to the server so they can be immediately assigned to a container and tested.
+The path is relative to the Minecraft server's root directory. Example: 'world/datapacks/my_pack/data/mvs/loot_table/chests/custom.json'`,
+    {
+        file_path: z.string().describe("The file path relative to the server root, e.g. 'world/datapacks/mod_id/data/namespace/loot_table/chests/new_loot.json'"),
+        content: z.string().describe("The string content to write to the file (e.g. stringified JSON)."),
+    },
+    async ({ file_path, content }) => {
+        const body = { path: file_path, content };
+        const data = await modPost("/file/write", body);
+        return textResult(data);
+    }
+);
+
 // --- container read/write ---
 
 server.tool(
