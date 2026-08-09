@@ -62,74 +62,63 @@ public class BlockScanner {
             return GSON.toJson(err);
         }
 
-        CompletableFuture<JsonArray> future = new CompletableFuture<>();
+        BlockPos min = selection.getMin();
+        BlockPos max = selection.getMax();
 
-        server.execute(() -> {
-            try {
-                JsonArray results = new JsonArray();
-                BlockPos min = selection.getMin();
-                BlockPos max = selection.getMax();
+        int minChunkX = min.getX() >> 4;
+        int maxChunkX = max.getX() >> 4;
+        int minChunkZ = min.getZ() >> 4;
+        int maxChunkZ = max.getZ() >> 4;
 
-                ServerWorld world = server.getOverworld();
-                RegistryWrapper.WrapperLookup registries = server.getRegistryManager();
+        int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
+        if (chunkCount > 4096) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "Selection covers " + chunkCount + " chunks, exceeding the safety limit of 4096 chunks (~1024x1024 blocks). Please make a smaller selection.");
+            return GSON.toJson(err);
+        }
 
-                int minChunkX = min.getX() >> 4;
-                int maxChunkX = max.getX() >> 4;
-                int minChunkZ = min.getZ() >> 4;
-                int maxChunkZ = max.getZ() >> 4;
+        ServerWorld world = server.getOverworld();
+        RegistryWrapper.WrapperLookup registries = server.getRegistryManager();
+        JsonArray results = new JsonArray();
 
-                int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
-                if (chunkCount > 4096) {
-                    throw new IllegalArgumentException("Selection covers " + chunkCount + " chunks, exceeding the safety limit of 4096 chunks (~1024x1024 blocks). Please make a smaller selection.");
-                }
+        CompletableFuture<List<Void>> f = ChunkCache.runOverRange(world, minChunkX, maxChunkX, minChunkZ, maxChunkZ,
+            (chunk, cpos) -> {
+                for (BlockPos pos : chunk.getBlockEntityPositions()) {
+                    if (pos.getX() >= min.getX() && pos.getX() <= max.getX() &&
+                        pos.getY() >= min.getY() && pos.getY() <= max.getY() &&
+                        pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ()) {
 
-                for (int cx = minChunkX; cx <= maxChunkX; cx++) {
-                    for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
-                        WorldChunk chunk = world.getChunk(cx, cz);
-                        if (chunk != null) {
-                            for (BlockPos pos : chunk.getBlockEntityPositions()) {
-                                if (pos.getX() >= min.getX() && pos.getX() <= max.getX() &&
-                                    pos.getY() >= min.getY() && pos.getY() <= max.getY() &&
-                                    pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ()) {
-                                    
-                                    BlockEntity be = chunk.getBlockEntity(pos);
-                                    if (be instanceof JigsawBlockEntity jigsaw) {
-                                        JsonObject jObj = jigsawToJson(jigsaw, pos, registries);
-                                        if (nameFilter == null || 
-                                            jObj.get("name").getAsString().contains(nameFilter) || 
-                                            jObj.get("target").getAsString().contains(nameFilter) || 
-                                            jObj.get("pool").getAsString().contains(nameFilter)) {
-                                            results.add(jObj);
-                                        }
-                                    } else if (be instanceof StructureBlockBlockEntity structBlock) {
-                                        JsonObject sObj = structureBlockToJson(structBlock, pos, registries);
-                                        if (nameFilter == null || 
-                                            sObj.get("name").getAsString().contains(nameFilter) || 
-                                            sObj.get("metadata").getAsString().contains(nameFilter)) {
-                                            results.add(sObj);
-                                        }
-                                    }
-                                }
+                        BlockEntity be = chunk.getBlockEntity(pos);
+                        if (be instanceof JigsawBlockEntity jigsaw) {
+                            JsonObject jObj = jigsawToJson(jigsaw, pos, registries);
+                            if (nameFilter == null ||
+                                jObj.get("name").getAsString().contains(nameFilter) ||
+                                jObj.get("target").getAsString().contains(nameFilter) ||
+                                jObj.get("pool").getAsString().contains(nameFilter)) {
+                                results.add(jObj);
+                            }
+                        } else if (be instanceof StructureBlockBlockEntity structBlock) {
+                            JsonObject sObj = structureBlockToJson(structBlock, pos, registries);
+                            if (nameFilter == null ||
+                                sObj.get("name").getAsString().contains(nameFilter) ||
+                                sObj.get("metadata").getAsString().contains(nameFilter)) {
+                                results.add(sObj);
                             }
                         }
                     }
                 }
-
-                future.complete(results);
-            } catch(Exception e) {
-                future.completeExceptionally(e);
-            }
-        });
+                return null;
+            });
 
         try {
-            JsonArray results = future.get(10, TimeUnit.SECONDS);
+            f.get(120, TimeUnit.SECONDS);
             JsonObject wrapper = new JsonObject();
             wrapper.addProperty("count", results.size());
             wrapper.add("blocks", results);
             return GSON.toJson(wrapper);
         } catch(TimeoutException e) {
             JsonObject err = new JsonObject();
-            err.addProperty("error", "Timed out waiting for server thread");
+            err.addProperty("error", "Timed out waiting for chunk iteration");
             return GSON.toJson(err);
         } catch(ExecutionException | InterruptedException e) {
             JsonObject err = new JsonObject();
@@ -241,21 +230,19 @@ public class BlockScanner {
 
     // Triggers the save operation on structure blocks in selection or at coordinates
     public static String saveStructures(MinecraftServer server, SelectionManager.Region selection, JsonObject request) {
-        CompletableFuture<JsonObject> future = new CompletableFuture<>();
-
-        server.execute(() -> {
-            try {
-                JsonObject result = new JsonObject();
-                JsonArray savedList = new JsonArray();
-                ServerWorld world = server.getOverworld();
-
-                if (request.has("x") && request.has("y") && request.has("z")) {
+        if (request.has("x") && request.has("y") && request.has("z")) {
+            CompletableFuture<JsonObject> future = new CompletableFuture<>();
+            server.execute(() -> {
+                try {
+                    JsonObject result = new JsonObject();
+                    JsonArray savedList = new JsonArray();
+                    ServerWorld world = server.getOverworld();
                     int x = request.get("x").getAsInt();
                     int y = request.get("y").getAsInt();
                     int z = request.get("z").getAsInt();
                     BlockPos pos = new BlockPos(x, y, z);
-                    
-                    world.getChunk(pos.getX() >> 4, pos.getZ() >> 4);
+
+                    ChunkCache.acquire(world, pos.getX() >> 4, pos.getZ() >> 4);
                     BlockEntity be = world.getBlockEntity(pos);
 
                     if (be instanceof StructureBlockBlockEntity structBlock) {
@@ -264,11 +251,11 @@ public class BlockScanner {
                         item.addProperty("x", pos.getX());
                         item.addProperty("y", pos.getY());
                         item.addProperty("z", pos.getZ());
-                        
+
                         NbtCompound nbt = structBlock.createNbt(server.getRegistryManager());
                         String name = nbt.getString("name").orElse("");
                         item.addProperty("name", name);
-                        
+
                         item.addProperty("success", success);
                         savedList.add(item);
                     } else {
@@ -276,67 +263,80 @@ public class BlockScanner {
                         future.complete(result);
                         return;
                     }
-                } else {
-                    if (!selection.isComplete()) {
-                        result.addProperty("error", "No complete selection active");
-                        future.complete(result);
-                        return;
-                    }
 
-                    BlockPos min = selection.getMin();
-                    BlockPos max = selection.getMax();
+                    result.addProperty("count", savedList.size());
+                    result.add("results", savedList);
+                    future.complete(result);
+                } catch (Exception e) {
+                    future.completeExceptionally(e);
+                }
+            });
+            try {
+                return GSON.toJson(future.get(10, TimeUnit.SECONDS));
+            } catch (Exception e) {
+                JsonObject err = new JsonObject();
+                err.addProperty("error", e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+                return GSON.toJson(err);
+            }
+        }
 
-                    int minChunkX = min.getX() >> 4;
-                    int maxChunkX = max.getX() >> 4;
-                    int minChunkZ = min.getZ() >> 4;
-                    int maxChunkZ = max.getZ() >> 4;
+        if (!selection.isComplete()) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "No complete selection active");
+            return GSON.toJson(err);
+        }
 
-                    int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
-                    if (chunkCount > 4096) {
-                        throw new IllegalArgumentException("Selection covers too many chunks to scan safely (max: 4096)");
-                    }
+        BlockPos min = selection.getMin();
+        BlockPos max = selection.getMax();
 
-                    for (int cx = minChunkX; cx <= maxChunkX; cx++) {
-                        for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
-                            WorldChunk chunk = world.getChunk(cx, cz);
-                             if (chunk != null) {
-                                for (BlockPos pos : chunk.getBlockEntityPositions()) {
-                                    if (pos.getX() >= min.getX() && pos.getX() <= max.getX() &&
-                                        pos.getY() >= min.getY() && pos.getY() <= max.getY() &&
-                                        pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ()) {
-                                        
-                                        BlockEntity be = chunk.getBlockEntity(pos);
-                                        if (be instanceof StructureBlockBlockEntity structBlock) {
-                                            boolean success = structBlock.saveStructure();
-                                            JsonObject item = new JsonObject();
-                                            item.addProperty("x", pos.getX());
-                                            item.addProperty("y", pos.getY());
-                                            item.addProperty("z", pos.getZ());
-                                            
-                                            NbtCompound nbt = structBlock.createNbt(server.getRegistryManager());
-                                            String name = nbt.getString("name").orElse("");
-                                            item.addProperty("name", name);
-                                            
-                                            item.addProperty("success", success);
-                                            savedList.add(item);
-                                        }
-                                    }
-                                }
-                            }
+        int minChunkX = min.getX() >> 4;
+        int maxChunkX = max.getX() >> 4;
+        int minChunkZ = min.getZ() >> 4;
+        int maxChunkZ = max.getZ() >> 4;
+
+        int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
+        if (chunkCount > 4096) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "Selection covers too many chunks to scan safely (max: 4096)");
+            return GSON.toJson(err);
+        }
+
+        ServerWorld world = server.getOverworld();
+        JsonArray savedList = new JsonArray();
+
+        CompletableFuture<List<Void>> f = ChunkCache.runOverRange(world, minChunkX, maxChunkX, minChunkZ, maxChunkZ,
+            (chunk, cpos) -> {
+                for (BlockPos pos : chunk.getBlockEntityPositions()) {
+                    if (pos.getX() >= min.getX() && pos.getX() <= max.getX() &&
+                        pos.getY() >= min.getY() && pos.getY() <= max.getY() &&
+                        pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ()) {
+
+                        BlockEntity be = chunk.getBlockEntity(pos);
+                        if (be instanceof StructureBlockBlockEntity structBlock) {
+                            boolean success = structBlock.saveStructure();
+                            JsonObject item = new JsonObject();
+                            item.addProperty("x", pos.getX());
+                            item.addProperty("y", pos.getY());
+                            item.addProperty("z", pos.getZ());
+
+                            NbtCompound nbt = structBlock.createNbt(server.getRegistryManager());
+                            String name = nbt.getString("name").orElse("");
+                            item.addProperty("name", name);
+
+                            item.addProperty("success", success);
+                            savedList.add(item);
                         }
                     }
                 }
-
-                result.addProperty("count", savedList.size());
-                result.add("results", savedList);
-                future.complete(result);
-            } catch (Exception e) {
-                future.completeExceptionally(e);
-            }
-        });
+                return null;
+            });
 
         try {
-            return GSON.toJson(future.get(10, TimeUnit.SECONDS));
+            f.get(120, TimeUnit.SECONDS);
+            JsonObject result = new JsonObject();
+            result.addProperty("count", savedList.size());
+            result.add("results", savedList);
+            return GSON.toJson(result);
         } catch (Exception e) {
             JsonObject err = new JsonObject();
             err.addProperty("error", e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
@@ -750,38 +750,34 @@ public class BlockScanner {
             return GSON.toJson(err);
         }
 
-        CompletableFuture<JsonArray> future = new CompletableFuture<>();
+        BlockPos min = selection.getMin();
+        BlockPos max = selection.getMax();
 
-        server.execute(() -> {
-            try {
-                JsonArray results = new JsonArray();
-                BlockPos min = selection.getMin();
-                BlockPos max = selection.getMax();
+        int minChunkX = min.getX() >> 4;
+        int maxChunkX = max.getX() >> 4;
+        int minChunkZ = min.getZ() >> 4;
+        int maxChunkZ = max.getZ() >> 4;
 
-                ServerWorld world = server.getOverworld();
-                RegistryWrapper.WrapperLookup registries = server.getRegistryManager();
+        int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
+        if (chunkCount > 4096) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "Selection covers too many chunks (max 4096).");
+            return GSON.toJson(err);
+        }
 
-                int minChunkX = min.getX() >> 4;
-                int maxChunkX = max.getX() >> 4;
-                int minChunkZ = min.getZ() >> 4;
-                int maxChunkZ = max.getZ() >> 4;
+        ServerWorld world = server.getOverworld();
+        RegistryWrapper.WrapperLookup registries = server.getRegistryManager();
+        JsonArray results = new JsonArray();
 
-                int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
-                if (chunkCount > 4096) {
-                    throw new IllegalArgumentException("Selection covers too many chunks (max 4096).");
-                }
+        CompletableFuture<List<Void>> f = ChunkCache.runOverRange(world, minChunkX, maxChunkX, minChunkZ, maxChunkZ,
+            (chunk, cpos) -> {
+                for (BlockPos pos : chunk.getBlockEntityPositions()) {
+                    if (pos.getX() >= min.getX() && pos.getX() <= max.getX() &&
+                        pos.getY() >= min.getY() && pos.getY() <= max.getY() &&
+                        pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ()) {
 
-                for (int cx = minChunkX; cx <= maxChunkX; cx++) {
-                    for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
-                        WorldChunk chunk = world.getChunk(cx, cz);
-                        if (chunk != null) {
-                            for (BlockPos pos : chunk.getBlockEntityPositions()) {
-                                if (pos.getX() >= min.getX() && pos.getX() <= max.getX() &&
-                                    pos.getY() >= min.getY() && pos.getY() <= max.getY() &&
-                                    pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ()) {
-                                    
-                                    BlockEntity be = chunk.getBlockEntity(pos);
-                                    if (be instanceof Inventory || be instanceof net.minecraft.block.entity.VaultBlockEntity || be instanceof net.minecraft.block.entity.TrialSpawnerBlockEntity) {
+                        BlockEntity be = chunk.getBlockEntity(pos);
+                        if (be instanceof Inventory || be instanceof net.minecraft.block.entity.VaultBlockEntity || be instanceof net.minecraft.block.entity.TrialSpawnerBlockEntity) {
                                         JsonObject obj = new JsonObject();
                                         obj.addProperty("x", pos.getX());
                                         obj.addProperty("y", pos.getY());
@@ -835,28 +831,21 @@ public class BlockScanner {
                                             obj.add("loot_table", JsonNull.INSTANCE);
                                         }
                                         results.add(obj);
-                                    }
-                                }
-                            }
                         }
                     }
                 }
-
-                future.complete(results);
-            } catch(Exception e) {
-                future.completeExceptionally(e);
-            }
-        });
+                return null;
+            });
 
         try {
-            JsonArray results = future.get(10, TimeUnit.SECONDS);
+            f.get(120, TimeUnit.SECONDS);
             JsonObject wrapper = new JsonObject();
             wrapper.addProperty("count", results.size());
             wrapper.add("containers", results);
             return GSON.toJson(wrapper);
         } catch(TimeoutException e) {
             JsonObject err = new JsonObject();
-            err.addProperty("error", "Timed out waiting for server thread");
+            err.addProperty("error", "Timed out waiting for chunk iteration");
             return GSON.toJson(err);
         } catch(ExecutionException | InterruptedException e) {
             JsonObject err = new JsonObject();
@@ -872,59 +861,74 @@ public class BlockScanner {
             return GSON.toJson(err);
         }
         
-        CompletableFuture<JsonObject> future = new CompletableFuture<>();
-        server.execute(() -> {
-            try {
-                BlockPos min = selection.getMin();
-                BlockPos max = selection.getMax();
-                
-                long volume = (max.getX() - min.getX() + 1L) * (max.getY() - min.getY() + 1L) * (max.getZ() - min.getZ() + 1L);
-                if (volume > 1000000) {
-                    throw new IllegalArgumentException("Selection too large for block scanning (max 1,000,000 blocks). Selected: " + volume);
-                }
+        BlockPos min = selection.getMin();
+        BlockPos max = selection.getMax();
 
-                ServerWorld world = server.getOverworld();
-                
-                Set<Block> targets = new HashSet<>();
-                for (JsonElement e : targetBlocks) {
-                    if (e.isJsonPrimitive()) {
-                        Identifier id = Identifier.tryParse(e.getAsString());
-                        if (id != null && Registries.BLOCK.containsId(id)) {
-                            targets.add(Registries.BLOCK.get(id));
+        long volume = (max.getX() - min.getX() + 1L) * (max.getY() - min.getY() + 1L) * (max.getZ() - min.getZ() + 1L);
+        if (volume > 1000000) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "Selection too large for block scanning (max 1,000,000 blocks). Selected: " + volume);
+            return GSON.toJson(err);
+        }
+
+        ServerWorld world = server.getOverworld();
+
+        Set<Block> targets = new HashSet<>();
+        for (JsonElement e : targetBlocks) {
+            if (e.isJsonPrimitive()) {
+                Identifier id = Identifier.tryParse(e.getAsString());
+                if (id != null && Registries.BLOCK.containsId(id)) {
+                    targets.add(Registries.BLOCK.get(id));
+                }
+            }
+        }
+
+        int minChunkX = min.getX() >> 4;
+        int maxChunkX = max.getX() >> 4;
+        int minChunkZ = min.getZ() >> 4;
+        int maxChunkZ = max.getZ() >> 4;
+
+        JsonArray results = new JsonArray();
+        boolean[] hitLimit = new boolean[]{false};
+        BlockPos.Mutable m = new BlockPos.Mutable();
+
+        CompletableFuture<List<Void>> f = ChunkCache.runOverRange(world, minChunkX, maxChunkX, minChunkZ, maxChunkZ,
+            (chunk, cpos) -> {
+                if (hitLimit[0]) return null;
+                int x0 = Math.max(min.getX(), cpos.getStartX());
+                int x1 = Math.min(max.getX(), cpos.getEndX());
+                int z0 = Math.max(min.getZ(), cpos.getStartZ());
+                int z1 = Math.min(max.getZ(), cpos.getEndZ());
+                for (int x = x0; x <= x1; x++) {
+                    for (int y = min.getY(); y <= max.getY(); y++) {
+                        for (int z = z0; z <= z1; z++) {
+                            if (results.size() >= 2000) { hitLimit[0] = true; return null; }
+                            m.set(x, y, z);
+                            BlockState state = chunk.getBlockState(m);
+                            if (targets.contains(state.getBlock())) {
+                                JsonObject obj = new JsonObject();
+                                obj.addProperty("x", x);
+                                obj.addProperty("y", y);
+                                obj.addProperty("z", z);
+                                obj.addProperty("id", Registries.BLOCK.getId(state.getBlock()).toString());
+                                results.add(obj);
+                            }
                         }
                     }
                 }
-
-                JsonArray results = new JsonArray();
-                for (BlockPos pos : BlockPos.iterate(min, max)) {
-                    if (results.size() >= 2000) break;
-                    
-                    BlockState state = world.getBlockState(pos);
-                    if (targets.contains(state.getBlock())) {
-                        JsonObject obj = new JsonObject();
-                        obj.addProperty("x", pos.getX());
-                        obj.addProperty("y", pos.getY());
-                        obj.addProperty("z", pos.getZ());
-                        obj.addProperty("id", Registries.BLOCK.getId(state.getBlock()).toString());
-                        results.add(obj);
-                    }
-                }
-
-                JsonObject wrapper = new JsonObject();
-                wrapper.addProperty("count", results.size());
-                if (results.size() >= 2000) wrapper.addProperty("warning", "Result limit of 2000 reached.");
-                wrapper.add("blocks", results);
-                future.complete(wrapper);
-            } catch(Exception e) {
-                future.completeExceptionally(e);
-            }
-        });
+                return null;
+            });
 
         try {
-            return GSON.toJson(future.get(10, TimeUnit.SECONDS));
+            f.get(120, TimeUnit.SECONDS);
+            JsonObject wrapper = new JsonObject();
+            wrapper.addProperty("count", results.size());
+            if (results.size() >= 2000) wrapper.addProperty("warning", "Result limit of 2000 reached.");
+            wrapper.add("blocks", results);
+            return GSON.toJson(wrapper);
         } catch(Exception e) {
             JsonObject err = new JsonObject();
-            err.addProperty("error", e.getMessage());
+            err.addProperty("error", e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
             return GSON.toJson(err);
         }
     }
@@ -1361,11 +1365,12 @@ public class BlockScanner {
     }
 
     public static String getBlocks(MinecraftServer server, SelectionManager.Region selection, JsonArray posList) {
-        CompletableFuture<JsonObject> future = new CompletableFuture<>();
-        server.execute(() -> {
-            try {
-                ServerWorld world = server.getOverworld();
-                if (posList != null && posList.size() > 0) {
+        ServerWorld world = server.getOverworld();
+
+        if (posList != null && posList.size() > 0) {
+            CompletableFuture<JsonObject> future = new CompletableFuture<>();
+            server.execute(() -> {
+                try {
                     JsonArray results = new JsonArray();
                     for (JsonElement el : posList) {
                         JsonObject obj = el.getAsJsonObject();
@@ -1373,10 +1378,11 @@ public class BlockScanner {
                         int y = obj.get("y").getAsInt();
                         int z = obj.get("z").getAsInt();
                         BlockPos pos = new BlockPos(x, y, z);
-                        
+
+                        ChunkCache.acquire(world, pos.getX() >> 4, pos.getZ() >> 4);
                         BlockState state = world.getBlockState(pos);
                         BlockEntity be = world.getBlockEntity(pos);
-                        
+
                         JsonObject res = new JsonObject();
                         res.addProperty("x", x);
                         res.addProperty("y", y);
@@ -1388,73 +1394,85 @@ public class BlockScanner {
                     JsonObject wrapper = new JsonObject();
                     wrapper.add("blocks", results);
                     future.complete(wrapper);
-                } else {
-                    if (selection == null || !selection.isComplete()) {
-                        throw new IllegalArgumentException("No complete selection");
-                    }
-                    BlockPos min = selection.getMin();
-                    BlockPos max = selection.getMax();
-                    
-                    int minChunkX = min.getX() >> 4;
-                    int maxChunkX = max.getX() >> 4;
-                    int minChunkZ = min.getZ() >> 4;
-                    int maxChunkZ = max.getZ() >> 4;
+                } catch(Exception e) {
+                    future.completeExceptionally(e);
+                }
+            });
+            try {
+                return GSON.toJson(future.get(30, TimeUnit.SECONDS));
+            } catch(Exception e) {
+                JsonObject err = new JsonObject();
+                err.addProperty("error", e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+                return GSON.toJson(err);
+            }
+        }
 
-                    int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
-                    if (chunkCount > 4096) {
-                        throw new IllegalArgumentException("Selection covers too many chunks (max 4096).");
-                    }
-                    
-                    Map<String, Integer> paletteMap = new HashMap<>();
-                    JsonArray paletteArr = new JsonArray();
-                    JsonArray blocksArr = new JsonArray();
-                    
-                    for (int cx = minChunkX; cx <= maxChunkX; cx++) {
-                        for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
-                            WorldChunk chunk = world.getChunk(cx, cz);
-                            if (chunk != null) {
-                                for (int x = Math.max(min.getX(), cx * 16); x <= Math.min(max.getX(), cx * 16 + 15); x++) {
-                                    for (int y = min.getY(); y <= max.getY(); y++) {
-                                        for (int z = Math.max(min.getZ(), cz * 16); z <= Math.min(max.getZ(), cz * 16 + 15); z++) {
-                                            BlockPos pos = new BlockPos(x, y, z);
-                                            BlockState state = chunk.getBlockState(pos);
-                                            BlockEntity be = chunk.getBlockEntity(pos);
-                                            String stateStr = stateToString(state);
-                                            
-                                            if (!paletteMap.containsKey(stateStr)) {
-                                                paletteMap.put(stateStr, paletteMap.size());
-                                                paletteArr.add(stateStr);
-                                            }
-                                            
-                                            JsonObject b = new JsonObject();
-                                            b.addProperty("x", x);
-                                            b.addProperty("y", y);
-                                            b.addProperty("z", z);
-                                            b.addProperty("palette_index", paletteMap.get(stateStr));
-                                            b.addProperty("has_block_entity", be != null);
-                                            blocksArr.add(b);
-                                        }
-                                    }
-                                }
+        if (selection == null || !selection.isComplete()) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "No complete selection");
+            return GSON.toJson(err);
+        }
+        BlockPos min = selection.getMin();
+        BlockPos max = selection.getMax();
+
+        int minChunkX = min.getX() >> 4;
+        int maxChunkX = max.getX() >> 4;
+        int minChunkZ = min.getZ() >> 4;
+        int maxChunkZ = max.getZ() >> 4;
+
+        int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
+        if (chunkCount > 4096) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "Selection covers too many chunks (max 4096).");
+            return GSON.toJson(err);
+        }
+
+        Map<String, Integer> paletteMap = new HashMap<>();
+        JsonArray paletteArr = new JsonArray();
+        JsonArray blocksArr = new JsonArray();
+        BlockPos.Mutable m = new BlockPos.Mutable();
+
+        CompletableFuture<List<Void>> f = ChunkCache.runOverRange(world, minChunkX, maxChunkX, minChunkZ, maxChunkZ,
+            (chunk, cpos) -> {
+                int x0 = Math.max(min.getX(), cpos.getStartX());
+                int x1 = Math.min(max.getX(), cpos.getEndX());
+                int z0 = Math.max(min.getZ(), cpos.getStartZ());
+                int z1 = Math.min(max.getZ(), cpos.getEndZ());
+                for (int x = x0; x <= x1; x++) {
+                    for (int y = min.getY(); y <= max.getY(); y++) {
+                        for (int z = z0; z <= z1; z++) {
+                            m.set(x, y, z);
+                            BlockState state = chunk.getBlockState(m);
+                            BlockEntity be = chunk.getBlockEntity(m);
+                            String stateStr = stateToString(state);
+
+                            if (!paletteMap.containsKey(stateStr)) {
+                                paletteMap.put(stateStr, paletteMap.size());
+                                paletteArr.add(stateStr);
                             }
+
+                            JsonObject b = new JsonObject();
+                            b.addProperty("x", x);
+                            b.addProperty("y", y);
+                            b.addProperty("z", z);
+                            b.addProperty("palette_index", paletteMap.get(stateStr));
+                            b.addProperty("has_block_entity", be != null);
+                            blocksArr.add(b);
                         }
                     }
-                    
-                    JsonObject wrapper = new JsonObject();
-                    wrapper.add("palette", paletteArr);
-                    wrapper.add("blocks", blocksArr);
-                    future.complete(wrapper);
                 }
-            } catch(Exception e) {
-                future.completeExceptionally(e);
-            }
-        });
-        
+                return null;
+            });
+
         try {
-            return GSON.toJson(future.get(30, TimeUnit.SECONDS));
+            f.get(120, TimeUnit.SECONDS);
+            JsonObject wrapper = new JsonObject();
+            wrapper.add("palette", paletteArr);
+            wrapper.add("blocks", blocksArr);
+            return GSON.toJson(wrapper);
         } catch(Exception e) {
             JsonObject err = new JsonObject();
-            err.addProperty("error", e.getMessage());
+            err.addProperty("error", e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
             return GSON.toJson(err);
         }
     }
@@ -1559,105 +1577,99 @@ public class BlockScanner {
             return GSON.toJson(err);
         }
         
-        CompletableFuture<JsonObject> future = new CompletableFuture<>();
-        server.execute(() -> {
-            try {
-                ServerWorld world = server.getOverworld();
-                BlockPos min = selection.getMin();
-                BlockPos max = selection.getMax();
-                
-                Set<Identifier> findSet = new HashSet<>();
-                for (JsonElement el : findIds) {
-                    findSet.add(Identifier.of(el.getAsString()));
-                }
-                
-                BlockState replaceState = parseBlockState(replaceId);
-                
-                int minChunkX = min.getX() >> 4;
-                int maxChunkX = max.getX() >> 4;
-                int minChunkZ = min.getZ() >> 4;
-                int maxChunkZ = max.getZ() >> 4;
+        ServerWorld world = server.getOverworld();
+        BlockPos min = selection.getMin();
+        BlockPos max = selection.getMax();
 
-                int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
-                if (chunkCount > 4096) {
-                    throw new IllegalArgumentException("Selection covers too many chunks (max 4096).");
-                }
-                
-                int matched = 0;
-                int changed = 0;
-                int skipped_unloaded = 0;
-                JsonArray sample = new JsonArray();
-                JsonArray prevStates = new JsonArray();
-                
-                for (int cx = minChunkX; cx <= maxChunkX; cx++) {
-                    for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
-                        WorldChunk chunk = world.getChunk(cx, cz);
-                        if (chunk != null) {
-                            for (int x = Math.max(min.getX(), cx * 16); x <= Math.min(max.getX(), cx * 16 + 15); x++) {
-                                for (int y = min.getY(); y <= max.getY(); y++) {
-                                    for (int z = Math.max(min.getZ(), cz * 16); z <= Math.min(max.getZ(), cz * 16 + 15); z++) {
-                                        BlockPos pos = new BlockPos(x, y, z);
-                                        BlockState state = chunk.getBlockState(pos);
-                                        Identifier id = Registries.BLOCK.getId(state.getBlock());
-                                        if (findSet.contains(id)) {
-                                            matched++;
-                                            if (sample.size() < 10) {
-                                                JsonObject s = new JsonObject();
-                                                s.addProperty("x", x);
-                                                s.addProperty("y", y);
-                                                s.addProperty("z", z);
-                                                s.addProperty("from", stateToString(state));
-                                                sample.add(s);
-                                            }
-                                            if (!dryRun && changed < maxBlocks) {
-                                                BlockEntity oldBe = chunk.getBlockEntity(pos);
-                                                JsonObject prev = new JsonObject();
-                                                prev.addProperty("x", x);
-                                                prev.addProperty("y", y);
-                                                prev.addProperty("z", z);
-                                                prev.addProperty("block", stateToString(state));
-                                                if (oldBe != null) {
-                                                    JsonElement oldNbtJson = Dynamic.convert(NbtOps.INSTANCE, JsonOps.INSTANCE, oldBe.createNbtWithIdentifyingData(server.getRegistryManager()));
-                                                    prev.add("nbt", oldNbtJson);
-                                                }
-                                                prevStates.add(prev);
-                                                
-                                                world.setBlockState(pos, replaceState, 50);
-                                                changed++;
-                                            }
-                                        }
+        Set<Identifier> findSet = new HashSet<>();
+        for (JsonElement el : findIds) {
+            findSet.add(Identifier.of(el.getAsString()));
+        }
+
+        BlockState replaceState = parseBlockState(replaceId);
+
+        int minChunkX = min.getX() >> 4;
+        int maxChunkX = max.getX() >> 4;
+        int minChunkZ = min.getZ() >> 4;
+        int maxChunkZ = max.getZ() >> 4;
+
+        int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
+        if (chunkCount > 4096) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "Selection covers too many chunks (max 4096).");
+            return GSON.toJson(err);
+        }
+
+        int[] matched = new int[]{0};
+        int[] changed = new int[]{0};
+        JsonArray sample = new JsonArray();
+        JsonArray prevStates = new JsonArray();
+        BlockPos.Mutable m = new BlockPos.Mutable();
+
+        CompletableFuture<List<Void>> f = ChunkCache.runOverRange(world, minChunkX, maxChunkX, minChunkZ, maxChunkZ,
+            (chunk, cpos) -> {
+                int x0 = Math.max(min.getX(), cpos.getStartX());
+                int x1 = Math.min(max.getX(), cpos.getEndX());
+                int z0 = Math.max(min.getZ(), cpos.getStartZ());
+                int z1 = Math.min(max.getZ(), cpos.getEndZ());
+                for (int x = x0; x <= x1; x++) {
+                    for (int y = min.getY(); y <= max.getY(); y++) {
+                        for (int z = z0; z <= z1; z++) {
+                            m.set(x, y, z);
+                            BlockState state = chunk.getBlockState(m);
+                            Identifier id = Registries.BLOCK.getId(state.getBlock());
+                            if (findSet.contains(id)) {
+                                matched[0]++;
+                                if (sample.size() < 10) {
+                                    JsonObject s = new JsonObject();
+                                    s.addProperty("x", x);
+                                    s.addProperty("y", y);
+                                    s.addProperty("z", z);
+                                    s.addProperty("from", stateToString(state));
+                                    sample.add(s);
+                                }
+                                if (!dryRun && changed[0] < maxBlocks) {
+                                    BlockPos pos = m.toImmutable();
+                                    BlockEntity oldBe = chunk.getBlockEntity(pos);
+                                    JsonObject prev = new JsonObject();
+                                    prev.addProperty("x", x);
+                                    prev.addProperty("y", y);
+                                    prev.addProperty("z", z);
+                                    prev.addProperty("block", stateToString(state));
+                                    if (oldBe != null) {
+                                        JsonElement oldNbtJson = Dynamic.convert(NbtOps.INSTANCE, JsonOps.INSTANCE, oldBe.createNbtWithIdentifyingData(server.getRegistryManager()));
+                                        prev.add("nbt", oldNbtJson);
                                     }
+                                    prevStates.add(prev);
+
+                                    world.setBlockState(pos, replaceState, 50);
+                                    changed[0]++;
                                 }
                             }
-                        } else {
-                            skipped_unloaded += 256 * (max.getY() - min.getY() + 1); // rough estimate
                         }
                     }
                 }
-                
-                JsonObject wrapper = new JsonObject();
-                wrapper.addProperty("matched", matched);
-                wrapper.addProperty("changed", changed);
-                wrapper.addProperty("skipped_unloaded", skipped_unloaded);
-                wrapper.add("sample", sample);
-                
-                if (!dryRun && changed > 0) {
-                    String token = UUID.randomUUID().toString();
-                    lastWriteBatch.put(token, prevStates);
-                    wrapper.addProperty("undo_token", token);
-                }
-                
-                future.complete(wrapper);
-            } catch(Exception e) {
-                future.completeExceptionally(e);
-            }
-        });
-        
+                return null;
+            });
+
         try {
-            return GSON.toJson(future.get(30, TimeUnit.SECONDS));
+            f.get(120, TimeUnit.SECONDS);
+            JsonObject wrapper = new JsonObject();
+            wrapper.addProperty("matched", matched[0]);
+            wrapper.addProperty("changed", changed[0]);
+            wrapper.addProperty("skipped_unloaded", 0);
+            wrapper.add("sample", sample);
+
+            if (!dryRun && changed[0] > 0) {
+                String token = UUID.randomUUID().toString();
+                lastWriteBatch.put(token, prevStates);
+                wrapper.addProperty("undo_token", token);
+            }
+
+            return GSON.toJson(wrapper);
         } catch(Exception e) {
             JsonObject err = new JsonObject();
-            err.addProperty("error", e.getMessage());
+            err.addProperty("error", e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
             return GSON.toJson(err);
         }
     }
