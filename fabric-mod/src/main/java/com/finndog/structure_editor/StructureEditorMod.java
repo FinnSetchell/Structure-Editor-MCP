@@ -47,6 +47,8 @@ public class StructureEditorMod implements ModInitializer {
         httpServer = new EditorHttpServer(config);
         httpServer.start();
 
+        ChunkCache.init();
+
         PayloadTypeRegistry.playS2C().register(SyncSelectionsPayload.ID, SyncSelectionsPayload.CODEC);
 
         net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STARTED.register(s -> mcServer = s);
