@@ -504,6 +504,7 @@ public class BlockScanner {
                 Inventory inv = null;
                 LootableContainerBlockEntity lootable = null;
                 net.minecraft.inventory.LootableInventory entityLootable = null;
+                net.minecraft.inventory.LootableInventory blockLootable = null;
                 BlockPos pos = finalPos;
 
                 if (useUuid) {
@@ -528,6 +529,7 @@ public class BlockScanner {
                     }
                     inv = (Inventory) be;
                     if(be instanceof LootableContainerBlockEntity l) lootable = l;
+                    if(be instanceof net.minecraft.inventory.LootableInventory l) blockLootable = l;
                 }
 
                 JsonObject result = new JsonObject();
@@ -543,6 +545,12 @@ public class BlockScanner {
                 } else if (entityLootable instanceof net.minecraft.entity.vehicle.VehicleInventory vi && vi.getLootTable() != null) {
                     result.addProperty("loot_table", vi.getLootTable().getValue().toString());
                     result.addProperty("loot_table_seed", vi.getLootTableSeed());
+                    hasLootTable = true;
+                } else if (blockLootable != null && blockLootable.getLootTable() != null) {
+                    // Covers block entities that implement LootableInventory without extending LootableContainerBlockEntity
+                    // (notably DecoratedPotBlockEntity — pots also unroll their loot table on getStack).
+                    result.addProperty("loot_table", blockLootable.getLootTable().getValue().toString());
+                    result.addProperty("loot_table_seed", blockLootable.getLootTableSeed());
                     hasLootTable = true;
                 } else {
                     result.add("loot_table", JsonNull.INSTANCE);
