@@ -535,17 +535,30 @@ public class BlockScanner {
                 result.addProperty("size", inv.size());
 
                 // Read loot table if present
+                boolean hasLootTable = false;
                 if(lootable != null && lootable.getLootTable() != null) {
                     result.addProperty("loot_table", lootable.getLootTable().getValue().toString());
                     result.addProperty("loot_table_seed", lootable.getLootTableSeed());
+                    hasLootTable = true;
                 } else if (entityLootable instanceof net.minecraft.entity.vehicle.VehicleInventory vi && vi.getLootTable() != null) {
                     result.addProperty("loot_table", vi.getLootTable().getValue().toString());
                     result.addProperty("loot_table_seed", vi.getLootTableSeed());
+                    hasLootTable = true;
                 } else {
                     result.add("loot_table", JsonNull.INSTANCE);
                 }
 
                 JsonArray slots = new JsonArray();
+                // If a loot table is set, do NOT call inv.getStack — vanilla's LootableContainerBlockEntity.getStack
+                // triggers checkLootInteraction which rolls the loot table and clears the LootTable field, permanently
+                // baking randomised loot into the source NBT. Items don't exist until a player opens the container.
+                if(hasLootTable) {
+                    result.addProperty("count", 0);
+                    result.add("slots", slots);
+                    result.addProperty("note", "Loot table not yet rolled. Items will appear when a player first opens the container.");
+                    future.complete(result);
+                    return;
+                }
                 for(int i = 0; i < inv.size(); i++) {
                     ItemStack stack = inv.getStack(i);
                     if(stack.isEmpty()) continue;
