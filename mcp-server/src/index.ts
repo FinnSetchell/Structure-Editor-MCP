@@ -53,7 +53,7 @@ function textResult(data: unknown) {
 
 const server = new McpServer({
     name: "structure-editor",
-    version: "1.3.3",
+    version: "1.3.4",
 });
 
 // --- health ---
