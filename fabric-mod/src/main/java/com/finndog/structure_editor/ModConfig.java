@@ -15,6 +15,12 @@ public class ModConfig {
     public String host = "127.0.0.1";
     public int port = 25580;
     public String apiKey = "";
+    // Bisect (and any vanilla 1.21.2+ server with pause-when-empty-seconds > 0) freezes the
+    // server tick loop when nobody is online. That freeze also blocks the queue mst uses to
+    // hop back to the server thread (server.execute), so scans/edits/saves time out and
+    // block entities in unloaded chunks never get reconstructed. Keeping this true forces
+    // getPauseWhenEmptySeconds() to 0 so the server keeps ticking whenever the mod is loaded.
+    public boolean keep_server_ticking = true;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 

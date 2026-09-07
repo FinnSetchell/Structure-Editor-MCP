@@ -5,7 +5,8 @@
   "compatibilityLevel": "JAVA_21",
   "refmap": "structure-editor-refmap.json",
   "mixins": [
-    "LootableContainerBlockEntityMixin"
+    "LootableContainerBlockEntityMixin",
+    "MinecraftServerMixin"
   ],
   "injectors": {
     "defaultRequire": 1
