@@ -5,8 +5,16 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.minecraft.block.entity.BlockEntity;
+import net.minecraft.block.entity.StructureBlockBlockEntity;
+import net.minecraft.nbt.NbtCompound;
+import net.minecraft.registry.RegistryKey;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.world.World;
 
 import java.io.*;
 import java.net.InetSocketAddress;
@@ -54,6 +62,8 @@ public class EditorHttpServer {
             server.createContext("/block/replace", new BlockReplaceHandler());
             server.createContext("/block/undo", new BlockUndoHandler());
             server.createContext("/file/write", new FileWriteHandler());
+            server.createContext("/structure-blocks", new StructureBlocksHandler());
+            server.createContext("/selection/from-structure", new SelectionFromStructureHandler());
             server.setExecutor(Executors.newFixedThreadPool(4));
             server.start();
             StructureEditorMod.LOGGER.info("Structure Editor HTTP server started on http://{}:{}", config.host, config.port);
@@ -733,16 +743,229 @@ public class EditorHttpServer {
                 }
                 
                 java.nio.file.Files.writeString(targetFile.toPath(), contentStr, StandardCharsets.UTF_8);
-                
+
                 // Automatically reload datapacks so the new loot table is available
                 mcServer.getCommandManager().executeWithPrefix(mcServer.getCommandSource(), "reload");
-                
+
                 JsonObject ok = new JsonObject();
                 ok.addProperty("success", true);
                 ok.addProperty("path", targetFile.getCanonicalPath());
                 sendJson(exchange, 200, GSON.toJson(ok));
             } catch(Exception e) {
                 sendJson(exchange, 500, GSON.toJson(errorJson("Error writing file: " + e.getMessage())));
+            }
+        }
+    }
+
+    // Resolves a dimension name from a request. Accepts a bare id ("nether"),
+    // a short form ("minecraft:overworld"), or a full "namespace:path" for
+    // custom dims. Defaults to overworld when the param is missing.
+    private RegistryKey<World> resolveDim(String raw) {
+        if(raw == null || raw.isEmpty()) return World.OVERWORLD;
+        String s = raw.trim().toLowerCase(java.util.Locale.ROOT);
+        switch(s) {
+            case "overworld": case "minecraft:overworld": return World.OVERWORLD;
+            case "nether": case "the_nether": case "minecraft:the_nether": return World.NETHER;
+            case "end": case "the_end": case "minecraft:the_end": return World.END;
+        }
+        Identifier id = Identifier.tryParse(s);
+        if(id == null) return null;
+        return RegistryKey.of(net.minecraft.registry.RegistryKeys.WORLD, id);
+    }
+
+    private String queryParam(HttpExchange exchange, String key) {
+        String query = exchange.getRequestURI().getQuery();
+        if(query == null) return null;
+        for(String param : query.split("&")) {
+            String[] pair = param.split("=", 2);
+            if(pair.length == 2 && pair[0].equals(key)) {
+                try {
+                    return java.net.URLDecoder.decode(pair[1], StandardCharsets.UTF_8);
+                } catch(Exception e) { return null; }
+            }
+        }
+        return null;
+    }
+
+    // GET /structure-blocks — list every tracked structure block from StructureBlockSaver's
+    // persistent registry. Optional query params: name_filter, mode_filter, dim.
+    class StructureBlocksHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if(!"GET".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            String dimRaw = queryParam(exchange, "dim");
+            String nameFilter = queryParam(exchange, "name_filter");
+            String modeFilter = queryParam(exchange, "mode_filter");
+            RegistryKey<World> dim = resolveDim(dimRaw);
+            if(dim == null) {
+                sendJson(exchange, 400, GSON.toJson(errorJson("Unrecognised dim: " + dimRaw)));
+                return;
+            }
+
+            SbsRegistryReader.Result r = SbsRegistryReader.read(mcServer, dim);
+            if(!r.present) {
+                JsonObject err = new JsonObject();
+                err.addProperty("error", "sbs_tracker_missing");
+                err.addProperty("dim", dim.getValue().toString());
+                err.addProperty("hint", "Install StructureBlockSaver on this world, or load a structure block once to seed its tracker.");
+                sendJson(exchange, 404, GSON.toJson(err));
+                return;
+            }
+
+            JsonArray blocks = new JsonArray();
+            int count = 0;
+            for(SbsRegistryReader.Entry e : r.entries) {
+                if(nameFilter != null && !e.name.contains(nameFilter)) continue;
+                if(modeFilter != null && !e.mode.equalsIgnoreCase(modeFilter)) continue;
+                JsonObject b = new JsonObject();
+                b.addProperty("x", e.pos.getX());
+                b.addProperty("y", e.pos.getY());
+                b.addProperty("z", e.pos.getZ());
+                b.addProperty("name", e.name);
+                b.addProperty("mode", e.mode);
+                b.addProperty("dim", e.dimension.toString());
+                blocks.add(b);
+                count++;
+            }
+            JsonObject out = new JsonObject();
+            out.addProperty("count", count);
+            out.addProperty("total", r.entries.size());
+            out.addProperty("source", "sbs");
+            out.addProperty("dim", dim.getValue().toString());
+            out.add("blocks", blocks);
+            sendJson(exchange, 200, GSON.toJson(out));
+        }
+    }
+
+    // POST /selection/from-structure — resolve a structure block by its saved-structure name
+    // (via SBS's tracker), then set the selection to a bbox that covers both the structure
+    // block itself AND the region it saves. Body: { "name": "...", "dim"?: "...", "region"?: "..." }
+    class SelectionFromStructureHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if(!"POST".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            try {
+                JsonObject body = JsonParser.parseString(readBody(exchange)).getAsJsonObject();
+                if(!body.has("name") || body.get("name").isJsonNull()) {
+                    sendJson(exchange, 400, GSON.toJson(errorJson("Missing 'name' in body")));
+                    return;
+                }
+                String name = body.get("name").getAsString();
+                String dimRaw = body.has("dim") && !body.get("dim").isJsonNull() ? body.get("dim").getAsString() : null;
+                String regionName = body.has("region") && !body.get("region").isJsonNull() ? body.get("region").getAsString() : "default";
+
+                RegistryKey<World> dim = resolveDim(dimRaw);
+                if(dim == null) {
+                    sendJson(exchange, 400, GSON.toJson(errorJson("Unrecognised dim: " + dimRaw)));
+                    return;
+                }
+
+                SbsRegistryReader.Result r = SbsRegistryReader.read(mcServer, dim);
+                if(!r.present) {
+                    JsonObject err = new JsonObject();
+                    err.addProperty("error", "sbs_tracker_missing");
+                    err.addProperty("dim", dim.getValue().toString());
+                    sendJson(exchange, 404, GSON.toJson(err));
+                    return;
+                }
+
+                java.util.List<SbsRegistryReader.Entry> matches = new java.util.ArrayList<>();
+                for(SbsRegistryReader.Entry e : r.entries) {
+                    if(e.name.equals(name)) matches.add(e);
+                }
+                if(matches.isEmpty()) {
+                    sendJson(exchange, 404, GSON.toJson(errorJson("No structure block with name '" + name + "' in dim " + dim.getValue())));
+                    return;
+                }
+                if(matches.size() > 1) {
+                    JsonObject err = new JsonObject();
+                    err.addProperty("error", "ambiguous");
+                    err.addProperty("message", matches.size() + " structure blocks share name '" + name + "'. Disambiguate by editing the SB names, or select by coords.");
+                    JsonArray positions = new JsonArray();
+                    for(SbsRegistryReader.Entry e : matches) {
+                        JsonObject p = new JsonObject();
+                        p.addProperty("x", e.pos.getX());
+                        p.addProperty("y", e.pos.getY());
+                        p.addProperty("z", e.pos.getZ());
+                        p.addProperty("mode", e.mode);
+                        positions.add(p);
+                    }
+                    err.add("candidates", positions);
+                    sendJson(exchange, 409, GSON.toJson(err));
+                    return;
+                }
+
+                SbsRegistryReader.Entry entry = matches.get(0);
+                ServerWorld world = mcServer.getWorld(dim);
+                if(world == null) {
+                    sendJson(exchange, 500, GSON.toJson(errorJson("Server has no loaded world for dim " + dim.getValue())));
+                    return;
+                }
+                BlockEntity be = world.getBlockEntity(entry.pos);
+                if(!(be instanceof StructureBlockBlockEntity sbe)) {
+                    JsonObject err = new JsonObject();
+                    err.addProperty("error", "not_a_structure_block");
+                    err.addProperty("message", "Tracker says a structure block '" + name + "' is at " + entry.pos.toShortString() + " but that chunk holds no such block entity (chunk unloaded, block broken, or tracker stale).");
+                    sendJson(exchange, 410, GSON.toJson(err));
+                    return;
+                }
+
+                BlockPos sbPos = entry.pos;
+                BlockPos offset = sbe.getOffset();
+                NbtCompound nbt = sbe.createNbt(world.getRegistryManager());
+                int sx = nbt.getInt("sizeX").orElse(0);
+                int sy = nbt.getInt("sizeY").orElse(0);
+                int sz = nbt.getInt("sizeZ").orElse(0);
+
+                BlockPos regionMin = sbPos.add(offset);
+                // structure size can be zero (LOAD/CORNER/DATA modes typically); guard the -1
+                BlockPos regionMax = regionMin.add(Math.max(sx - 1, 0), Math.max(sy - 1, 0), Math.max(sz - 1, 0));
+
+                int minX = Math.min(sbPos.getX(), Math.min(regionMin.getX(), regionMax.getX()));
+                int minY = Math.min(sbPos.getY(), Math.min(regionMin.getY(), regionMax.getY()));
+                int minZ = Math.min(sbPos.getZ(), Math.min(regionMin.getZ(), regionMax.getZ()));
+                int maxX = Math.max(sbPos.getX(), Math.max(regionMin.getX(), regionMax.getX()));
+                int maxY = Math.max(sbPos.getY(), Math.max(regionMin.getY(), regionMax.getY()));
+                int maxZ = Math.max(sbPos.getZ(), Math.max(regionMin.getZ(), regionMax.getZ()));
+
+                BlockPos min = new BlockPos(minX, minY, minZ);
+                BlockPos max = new BlockPos(maxX, maxY, maxZ);
+                selection.setPos1(regionName, min);
+                selection.setPos2(regionName, max);
+                StructureEditorMod.syncSelectionsToAll();
+                broadcastActionBar("Selection '" + regionName + "' set to structure '" + name + "'");
+
+                JsonObject ok = new JsonObject();
+                ok.addProperty("success", true);
+                ok.addProperty("name", name);
+                ok.addProperty("mode", nbt.getString("mode").orElse(entry.mode));
+                ok.addProperty("region", regionName);
+                ok.addProperty("dim", dim.getValue().toString());
+                JsonObject sbJ = new JsonObject();
+                sbJ.addProperty("x", sbPos.getX()); sbJ.addProperty("y", sbPos.getY()); sbJ.addProperty("z", sbPos.getZ());
+                ok.add("structure_block", sbJ);
+                JsonObject p1 = new JsonObject();
+                p1.addProperty("x", min.getX()); p1.addProperty("y", min.getY()); p1.addProperty("z", min.getZ());
+                ok.add("pos1", p1);
+                JsonObject p2 = new JsonObject();
+                p2.addProperty("x", max.getX()); p2.addProperty("y", max.getY()); p2.addProperty("z", max.getZ());
+                ok.add("pos2", p2);
+                JsonObject size = new JsonObject();
+                size.addProperty("x", sx); size.addProperty("y", sy); size.addProperty("z", sz);
+                ok.add("structure_size", size);
+                sendJson(exchange, 200, GSON.toJson(ok));
+            } catch(Exception e) {
+                sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
             }
         }
     }
