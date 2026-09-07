@@ -776,6 +776,66 @@ Can only be used once per token.`,
     }
 );
 
+// --- structure block registry (reads StructureBlockSaver's tracker) ---
+
+server.tool(
+    "list_structure_blocks",
+    `List every structure block tracked by StructureBlockSaver in the target dimension.
+Reads SBS's persistent registry, so it sees blocks in unloaded chunks too.
+Defaults to the overworld — pass 'dim' to look elsewhere (e.g. 'nether', 'end', 'minecraft:the_nether', or a custom dim id).
+Returns { count, total, source, dim, blocks: [{x, y, z, name, mode, dim}] }.
+Requires StructureBlockSaver to be installed on the target world.`,
+    {
+        name_filter: z.string().optional().describe("Only return blocks whose structure name contains this substring."),
+        mode_filter: z.string().optional().describe("Only return blocks in this mode: SAVE, LOAD, CORNER, or DATA."),
+        dim: z.string().optional().describe("Dimension to read. Defaults to overworld. Accepts 'overworld', 'nether', 'end', or a full namespace:path."),
+    },
+    async ({ name_filter, mode_filter, dim }) => {
+        const params = new URLSearchParams();
+        if (name_filter) params.append("name_filter", name_filter);
+        if (mode_filter) params.append("mode_filter", mode_filter);
+        if (dim) params.append("dim", dim);
+        const url = "/structure-blocks" + (params.toString() ? "?" + params.toString() : "");
+        const data = await modGet(url) as any;
+
+        if (data.error) {
+            return textResult(data);
+        }
+
+        if (!data.blocks || data.blocks.length === 0) {
+            return textResult({ count: 0, total: data.total ?? 0, dim: data.dim, message: "No structure blocks match." });
+        }
+
+        const lines: string[] = [];
+        lines.push(`Tracked ${data.count} structure block(s) in ${data.dim} (of ${data.total} total in this dim):`);
+        for (const b of data.blocks) {
+            const namePart = b.name ? b.name : "<unnamed>";
+            lines.push(`[${b.mode}] at (${b.x}, ${b.y}, ${b.z}) | ${namePart}`);
+        }
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    }
+);
+
+server.tool(
+    "set_selection_to_structure",
+    `Find a saved structure by name via StructureBlockSaver's tracker, then set the selection to a bounding box that covers both the structure block itself AND the region it saves.
+Handy for jumping straight to any structure by name and re-saving/editing it without hunting for it in-world.
+Defaults to the overworld. Pass 'dim' to look elsewhere.
+Errors with a candidates list if more than one SB shares the name.`,
+    {
+        name: z.string().describe("The structure name to look up (e.g. 'mns:mega_fortress/intact/upper/junction_1')."),
+        dim: z.string().optional().describe("Dimension to search. Defaults to overworld."),
+        region: z.string().optional().describe("Selection region to update. Defaults to 'default'."),
+    },
+    async ({ name, dim, region }) => {
+        const body: Record<string, unknown> = { name };
+        if (dim) body.dim = dim;
+        if (region) body.region = region;
+        const data = await modPost("/selection/from-structure", body);
+        return textResult(data);
+    }
+);
+
 //////////////////////////////
 // Start
 //////////////////////////////
