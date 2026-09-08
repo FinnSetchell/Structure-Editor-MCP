@@ -911,11 +911,31 @@ public class EditorHttpServer {
                     sendJson(exchange, 500, GSON.toJson(errorJson("Server has no loaded world for dim " + dim.getValue())));
                     return;
                 }
-                BlockEntity be = world.getBlockEntity(entry.pos);
-                if(!(be instanceof StructureBlockBlockEntity sbe)) {
+
+                // Hop to the server thread and force-load the SB's chunk so getBlockEntity
+                // returns something even when nobody is nearby (same pattern BlockScanner uses).
+                final BlockPos entryPos = entry.pos;
+                java.util.concurrent.CompletableFuture<StructureBlockBlockEntity> beFuture = new java.util.concurrent.CompletableFuture<>();
+                mcServer.execute(() -> {
+                    try {
+                        world.getChunk(entryPos.getX() >> 4, entryPos.getZ() >> 4);
+                        BlockEntity found = world.getBlockEntity(entryPos);
+                        beFuture.complete(found instanceof StructureBlockBlockEntity s ? s : null);
+                    } catch(Exception e) {
+                        beFuture.completeExceptionally(e);
+                    }
+                });
+                StructureBlockBlockEntity sbe;
+                try {
+                    sbe = beFuture.get(10, java.util.concurrent.TimeUnit.SECONDS);
+                } catch(java.util.concurrent.TimeoutException te) {
+                    sendJson(exchange, 504, GSON.toJson(errorJson("Timed out waiting for server thread to load chunk at " + entryPos.toShortString())));
+                    return;
+                }
+                if(sbe == null) {
                     JsonObject err = new JsonObject();
                     err.addProperty("error", "not_a_structure_block");
-                    err.addProperty("message", "Tracker says a structure block '" + name + "' is at " + entry.pos.toShortString() + " but that chunk holds no such block entity (chunk unloaded, block broken, or tracker stale).");
+                    err.addProperty("message", "Tracker says a structure block '" + name + "' is at " + entryPos.toShortString() + " but that block is not a structure block (SBS tracker stale, or the block was broken).");
                     sendJson(exchange, 410, GSON.toJson(err));
                     return;
                 }
