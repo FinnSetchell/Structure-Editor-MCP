@@ -47,13 +47,40 @@ function textResult(data: unknown) {
     };
 }
 
+// Shape for inline pos1/pos2 params on every scan/edit tool. If both are provided,
+// the request bypasses the stored 'region' selection entirely — safe for parallel
+// agents where each request is independent.
+const posSchema = z.object({
+    x: z.number().int(),
+    y: z.number().int(),
+    z: z.number().int(),
+}).describe("A block position.");
+
+type Pos = { x: number; y: number; z: number };
+
+// Append x1/y1/z1 & x2/y2/z2 to a URLSearchParams when both bounds are provided.
+// Used by GET endpoints where inline bounds have to travel in the query string.
+function appendBoundsToQuery(params: URLSearchParams, pos1?: Pos, pos2?: Pos) {
+    if (!pos1 || !pos2) return;
+    params.append("x1", String(pos1.x)); params.append("y1", String(pos1.y)); params.append("z1", String(pos1.z));
+    params.append("x2", String(pos2.x)); params.append("y2", String(pos2.y)); params.append("z2", String(pos2.z));
+}
+
+// Merge pos1/pos2 into a request body when both bounds are provided.
+// Used by POST endpoints. Ignored if either is missing.
+function mergeBoundsIntoBody(body: Record<string, unknown>, pos1?: Pos, pos2?: Pos) {
+    if (!pos1 || !pos2) return;
+    body.pos1 = pos1;
+    body.pos2 = pos2;
+}
+
 //////////////////////////////
 // MCP Server
 //////////////////////////////
 
 const server = new McpServer({
     name: "structure-editor",
-    version: "1.3.5",
+    version: "1.4.0",
 });
 
 // --- health ---
@@ -121,19 +148,23 @@ server.tool(
 
 server.tool(
     "scan_region",
-    `Scan the currently selected region and return every jigsaw block and structure block found within it.
+    `Scan a bounded region and return every jigsaw block and structure block found within it.
+Bounds are picked in this order: inline pos1+pos2 (stateless, use this for parallel agents), else the named stored region, else the 'default' stored region.
 Optional 'format' parameter: 'compact' (default, highly compressed line-by-line format to save tokens) or 'json' (full JSON structure).
 Optional 'name_filter' parameter: only return blocks whose name, pool, or target contains this string.`,
     {
         format: z.enum(["compact", "json"]).optional().default("compact").describe("Output format. Use 'compact' (default) to save context tokens, or 'json' for raw structured data."),
         name_filter: z.string().optional().describe("Only return blocks containing this string in their name, pool, or target properties."),
-        region: z.string().optional().describe("Optional region name to scan. Defaults to 'default'."),
+        region: z.string().optional().describe("Named stored region to scan. Ignored when pos1+pos2 are provided. Defaults to 'default'."),
+        pos1: posSchema.optional().describe("First corner of an inline bbox. Provide both pos1 and pos2 to bypass the stored region entirely."),
+        pos2: posSchema.optional().describe("Second corner of an inline bbox. Provide both pos1 and pos2 to bypass the stored region entirely."),
     },
-    async ({ format, name_filter, region }) => {
+    async ({ format, name_filter, region, pos1, pos2 }) => {
         let url = "/scan";
         const params = new URLSearchParams();
         if (name_filter) params.append("name", name_filter);
         if (region) params.append("region", region);
+        appendBoundsToQuery(params, pos1, pos2);
         if (params.toString()) url += "?" + params.toString();
         const data = await modGet(url) as { count: number; blocks: Array<Record<string, unknown>> };
         
@@ -188,13 +219,19 @@ Optional 'name_filter' parameter: only return blocks whose name, pool, or target
 
 server.tool(
     "scan_containers",
-    `Scan the currently selected region and return all containers (chests, barrels, etc) and their loot tables. Returns highly compressed output to save tokens.`,
+    `Scan a bounded region for containers (chests, barrels, etc) and return their loot tables. Highly compressed output to save tokens.
+Bounds are picked in this order: inline pos1+pos2 (stateless), else the named stored region, else 'default'.`,
     {
-        region: z.string().optional().describe("Optional region name to scan. Defaults to 'default'."),
+        region: z.string().optional().describe("Named stored region to scan. Ignored when pos1+pos2 are provided. Defaults to 'default'."),
+        pos1: posSchema.optional().describe("First corner of an inline bbox."),
+        pos2: posSchema.optional().describe("Second corner of an inline bbox."),
     },
-    async ({ region }) => {
+    async ({ region, pos1, pos2 }) => {
         let url = "/scan/containers";
-        if (region) url += `?region=${encodeURIComponent(region)}`;
+        const params = new URLSearchParams();
+        if (region) params.append("region", region);
+        appendBoundsToQuery(params, pos1, pos2);
+        if (params.toString()) url += "?" + params.toString();
         const data = await modGet(url) as { count: number; containers?: Array<Record<string, unknown>>, error?: string };
         if (data.error) {
             return textResult(data);
@@ -307,18 +344,17 @@ Returns a summary of what changed.`,
             .describe("Which fields to apply the replacement to (default: name, target, pool, final_state)"),
         dry_run: z.boolean().default(false)
             .describe("If true, returns what WOULD change without actually applying edits"),
-        region: z.string().optional().describe("Optional region name to perform bulk replace on. Defaults to 'default'."),
+        region: z.string().optional().describe("Named stored region to scan. Ignored when pos1+pos2 are provided. Defaults to 'default'."),
+        pos1: posSchema.optional().describe("First corner of an inline bbox."),
+        pos2: posSchema.optional().describe("Second corner of an inline bbox."),
     },
-    async ({ find, replace, fields_to_check, dry_run, region }) => {
-        // First scan jigsaws and structures
-        let url = "/scan";
-        if (region) url += `?region=${encodeURIComponent(region)}`;
-        const scanData = await modGet(url) as { count: number; blocks: Array<Record<string, unknown>> };
-
-        // Then scan containers
-        let containerUrl = "/scan/containers";
-        if (region) containerUrl += `?region=${encodeURIComponent(region)}`;
-        const containerScanData = await modGet(containerUrl) as { count: number; containers?: Array<Record<string, unknown>> };
+    async ({ find, replace, fields_to_check, dry_run, region, pos1, pos2 }) => {
+        const scanParams = new URLSearchParams();
+        if (region) scanParams.append("region", region);
+        appendBoundsToQuery(scanParams, pos1, pos2);
+        const suffix = scanParams.toString() ? "?" + scanParams.toString() : "";
+        const scanData = await modGet("/scan" + suffix) as { count: number; blocks: Array<Record<string, unknown>> };
+        const containerScanData = await modGet("/scan/containers" + suffix) as { count: number; containers?: Array<Record<string, unknown>> };
 
         if ((!scanData.blocks || scanData.blocks.length === 0) && (!containerScanData.containers || containerScanData.containers.length === 0)) {
             return textResult({ message: "No jigsaw/structure blocks or containers in selection", changed: 0 });
@@ -420,15 +456,18 @@ Provide x, y, and z to only trigger a specific structure block. Leave them out t
         x: z.number().int().optional().describe("Optional X coordinate of the structure block to save"),
         y: z.number().int().optional().describe("Optional Y coordinate of the structure block to save"),
         z: z.number().int().optional().describe("Optional Z coordinate of the structure block to save"),
-        region: z.string().optional().describe("Optional region name to save structures in. Defaults to 'default'."),
+        region: z.string().optional().describe("Named stored region to save from. Ignored when pos1+pos2 are provided or when x/y/z is set."),
+        pos1: posSchema.optional().describe("First corner of an inline bbox to save from."),
+        pos2: posSchema.optional().describe("Second corner of an inline bbox to save from."),
     },
-    async ({ x, y, z: zCoord, region }) => {
-        const body: Record<string, number> = {};
+    async ({ x, y, z: zCoord, region, pos1, pos2 }) => {
+        const body: Record<string, unknown> = {};
         if (x !== undefined && y !== undefined && zCoord !== undefined) {
             body.x = x;
             body.y = y;
             body.z = zCoord;
         }
+        mergeBoundsIntoBody(body, pos1, pos2);
         let url = "/save";
         if (region) url += `?region=${encodeURIComponent(region)}`;
         const data = await modPost(url, body);
@@ -573,14 +612,20 @@ server.tool(
 
 server.tool(
     "scan_blocks",
-    `Scan the currently selected region for specific blocks. Returns their coordinates.`,
+    `Scan a bounded region for specific blocks. Returns their coordinates.
+Bounds are picked in this order: inline pos1+pos2 (stateless), else the named stored region, else 'default'.`,
     {
         blocks: z.array(z.string()).describe("Array of block IDs to search for, e.g. ['minecraft:diamond_ore']"),
-        region: z.string().optional().describe("Optional region name to scan blocks in. Defaults to 'default'."),
+        region: z.string().optional().describe("Named stored region to scan. Ignored when pos1+pos2 are provided. Defaults to 'default'."),
+        pos1: posSchema.optional().describe("First corner of an inline bbox."),
+        pos2: posSchema.optional().describe("Second corner of an inline bbox."),
     },
-    async ({ blocks, region }) => {
+    async ({ blocks, region, pos1, pos2 }) => {
         let url = "/scan/blocks";
-        if (region) url += `?region=${encodeURIComponent(region)}`;
+        const params = new URLSearchParams();
+        if (region) params.append("region", region);
+        appendBoundsToQuery(params, pos1, pos2);
+        if (params.toString()) url += "?" + params.toString();
         const data = await modPost(url, blocks) as any;
         if (data.error) return textResult(data);
         if (!data.blocks || data.blocks.length === 0) return textResult({ count: 0, message: "No matching blocks found." });
@@ -597,14 +642,20 @@ server.tool(
 
 server.tool(
     "scan_entities",
-    `Scan the currently selected region for specific entities. Returns their coordinates and basic info.`,
+    `Scan a bounded region for specific entities. Returns their coordinates and basic info.
+Bounds are picked in this order: inline pos1+pos2 (stateless), else the named stored region, else 'default'.`,
     {
         entities: z.array(z.string()).optional().describe("Array of entity IDs to search for, e.g. ['minecraft:zombie']. Omit or pass empty array to return all entities."),
-        region: z.string().optional().describe("Optional region name to scan entities in. Defaults to 'default'."),
+        region: z.string().optional().describe("Named stored region to scan. Ignored when pos1+pos2 are provided. Defaults to 'default'."),
+        pos1: posSchema.optional().describe("First corner of an inline bbox."),
+        pos2: posSchema.optional().describe("Second corner of an inline bbox."),
     },
-    async ({ entities, region }) => {
+    async ({ entities, region, pos1, pos2 }) => {
         let url = "/scan/entities";
-        if (region) url += `?region=${encodeURIComponent(region)}`;
+        const params = new URLSearchParams();
+        if (region) params.append("region", region);
+        appendBoundsToQuery(params, pos1, pos2);
+        if (params.toString()) url += "?" + params.toString();
         const data = await modPost(url, entities || []) as any;
         if (data.error) return textResult(data);
         if (!data.entities || data.entities.length === 0) return textResult({ count: 0, message: "No matching entities found." });
@@ -700,19 +751,22 @@ Provides seamless synchronization of your building templates without needing SFT
 server.tool(
     "get_blocks",
     `Read blocks from the world. If you provide 'positions', it returns the blocks at those exact coordinates.
-If you omit 'positions', it scans the currently selected region (or 'region' param) and returns a palette-compressed JSON of all blocks in that region to save context tokens.`,
+If you omit 'positions', it scans a bounded region. Bounds order: inline pos1+pos2 (stateless), else named stored region, else 'default'.`,
     {
         positions: z.array(z.object({
             x: z.number().int(),
             y: z.number().int(),
             z: z.number().int()
         })).optional().describe("Array of specific coordinates to read. If omitted, the entire region is scanned."),
-        region: z.string().optional().describe("Optional region name to scan if positions is omitted. Defaults to 'default'."),
+        region: z.string().optional().describe("Named stored region to scan when positions is omitted. Ignored when pos1+pos2 are provided. Defaults to 'default'."),
+        pos1: posSchema.optional().describe("First corner of an inline bbox."),
+        pos2: posSchema.optional().describe("Second corner of an inline bbox."),
     },
-    async ({ positions, region }) => {
+    async ({ positions, region, pos1, pos2 }) => {
         const body: Record<string, unknown> = {};
         if (positions !== undefined) body.positions = positions;
         if (region !== undefined) body.region = region;
+        mergeBoundsIntoBody(body, pos1, pos2);
         const data = await modPost("/block/get", body);
         return textResult(data);
     }
@@ -722,7 +776,7 @@ server.tool(
     "set_blocks",
     `Set blocks in the world. This will NOT trigger block updates or physics (e.g. water won't flow, torches won't pop off).
 You can pass block NBT data. The previous block states are saved automatically and can be undone using undo_last_write.
-By default, placing blocks outside the currently selected region is blocked for safety.`,
+By default, placing blocks outside the active bounds is blocked for safety. Bounds order: inline pos1+pos2 (stateless), else named stored region, else 'default'.`,
     {
         blocks: z.array(z.object({
             x: z.number().int(),
@@ -731,12 +785,15 @@ By default, placing blocks outside the currently selected region is blocked for 
             block: z.string().describe("Block state string, e.g. 'minecraft:spruce_stairs[facing=north,half=bottom]'"),
             nbt: z.record(z.unknown()).optional().describe("Optional NBT data for block entities"),
         })).describe("Array of block updates. Max 10,000 blocks per call."),
-        allow_outside_selection: z.boolean().optional().default(false).describe("If true, allows setting blocks outside the active selection bounds."),
-        region: z.string().optional().describe("Optional region name to check bounds against. Defaults to 'default'."),
+        allow_outside_selection: z.boolean().optional().default(false).describe("If true, allows setting blocks outside the active bounds."),
+        region: z.string().optional().describe("Named stored region to bound against. Ignored when pos1+pos2 are provided. Defaults to 'default'."),
+        pos1: posSchema.optional().describe("First corner of an inline bbox."),
+        pos2: posSchema.optional().describe("Second corner of an inline bbox."),
     },
-    async ({ blocks, allow_outside_selection, region }) => {
+    async ({ blocks, allow_outside_selection, region, pos1, pos2 }) => {
         const body: Record<string, unknown> = { blocks, allow_outside_selection };
         if (region !== undefined) body.region = region;
+        mergeBoundsIntoBody(body, pos1, pos2);
         const data = await modPost("/block/set", body);
         return textResult(data);
     }
@@ -746,18 +803,22 @@ server.tool(
     "replace_blocks",
     `Bulk replace specific block IDs within a region with a new block ID.
 Example: replace all 'minecraft:air' with 'minecraft:structure_void'.
-No block updates/physics will occur. Previous block states are saved automatically.`,
+No block updates/physics will occur. Previous block states are saved automatically.
+Bounds order: inline pos1+pos2 (stateless), else named stored region, else 'default'.`,
     {
         find: z.array(z.string()).describe("Array of block IDs to replace, e.g. ['minecraft:air', 'minecraft:water']"),
         replace: z.string().describe("The new block state string to place, e.g. 'minecraft:structure_void'"),
-        region: z.string().optional().describe("Optional region name to search in. Defaults to 'default'."),
+        region: z.string().optional().describe("Named stored region to search in. Ignored when pos1+pos2 are provided. Defaults to 'default'."),
+        pos1: posSchema.optional().describe("First corner of an inline bbox."),
+        pos2: posSchema.optional().describe("Second corner of an inline bbox."),
         dry_run: z.boolean().optional().default(false).describe("If true, only counts the matches and returns a small sample, but does not modify the world."),
         max_blocks: z.number().int().optional().describe("Maximum number of blocks to replace. Defaults to all matches."),
     },
-    async ({ find, replace, region, dry_run, max_blocks }) => {
+    async ({ find, replace, region, pos1, pos2, dry_run, max_blocks }) => {
         const body: Record<string, unknown> = { find, replace, dry_run };
         if (region !== undefined) body.region = region;
         if (max_blocks !== undefined) body.max_blocks = max_blocks;
+        mergeBoundsIntoBody(body, pos1, pos2);
         const data = await modPost("/block/replace", body);
         return textResult(data);
     }
@@ -818,20 +879,60 @@ Requires StructureBlockSaver to be installed on the target world.`,
 
 server.tool(
     "set_selection_to_structure",
-    `Find a saved structure by name via StructureBlockSaver's tracker, then set the selection to a bounding box that covers both the structure block itself AND the region it saves.
-Handy for jumping straight to any structure by name and re-saving/editing it without hunting for it in-world.
+    `Find a saved structure by name via StructureBlockSaver's tracker, then set a stored selection region to a bounding box that covers both the structure block itself AND the region it saves.
+Writes state to a stored region — for parallel/stateless agent use, prefer 'find_structure_bounds' and pass the returned pos1/pos2 inline to other tools.
 Defaults to the overworld. Pass 'dim' to look elsewhere.
 Errors with a candidates list if more than one SB shares the name.`,
     {
         name: z.string().describe("The structure name to look up (e.g. 'mns:mega_fortress/intact/upper/junction_1')."),
         dim: z.string().optional().describe("Dimension to search. Defaults to overworld."),
-        region: z.string().optional().describe("Selection region to update. Defaults to 'default'."),
+        region: z.string().optional().describe("Selection region to update. Defaults to 'default'. Pick a unique name if multiple agents use this tool in parallel."),
     },
     async ({ name, dim, region }) => {
         const body: Record<string, unknown> = { name };
         if (dim) body.dim = dim;
         if (region) body.region = region;
         const data = await modPost("/selection/from-structure", body);
+        return textResult(data);
+    }
+);
+
+server.tool(
+    "find_structure_bounds",
+    `Look up a saved structure by name via StructureBlockSaver's tracker and return the bounding box that covers both the structure block itself and the region it saves — WITHOUT touching any stored selection.
+Read-only companion to set_selection_to_structure. Safe to call from parallel agents. Feed the returned pos1/pos2 straight into any scan/edit tool's inline pos1/pos2 params for fully stateless operation.
+Errors with a candidates list if more than one SB shares the name.`,
+    {
+        name: z.string().describe("The structure name to look up."),
+        dim: z.string().optional().describe("Dimension to search. Defaults to overworld."),
+    },
+    async ({ name, dim }) => {
+        const params = new URLSearchParams();
+        params.append("name", name);
+        if (dim) params.append("dim", dim);
+        const data = await modGet("/structure-bounds?" + params.toString());
+        return textResult(data);
+    }
+);
+
+server.tool(
+    "remove_region",
+    `Remove a stored selection region, or remove every stored region at once.
+Pass 'name' to remove one region (the 'default' region is reset to empty rather than deleted so the wand always has something to bind).
+Pass 'all: true' to remove every region.
+Exactly one of 'name' or 'all' must be provided.`,
+    {
+        name: z.string().optional().describe("Region name to remove."),
+        all: z.boolean().optional().describe("When true, remove every stored region."),
+    },
+    async ({ name, all }) => {
+        if ((!name && !all) || (name && all)) {
+            return textResult({ error: "Provide exactly one of 'name' or 'all: true'." });
+        }
+        const body: Record<string, unknown> = {};
+        if (all) body.all = true;
+        else if (name) body.name = name;
+        const data = await modPost("/selection/remove", body);
         return textResult(data);
     }
 );
