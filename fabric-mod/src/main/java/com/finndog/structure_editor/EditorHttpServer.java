@@ -64,6 +64,8 @@ public class EditorHttpServer {
             server.createContext("/file/write", new FileWriteHandler());
             server.createContext("/structure-blocks", new StructureBlocksHandler());
             server.createContext("/selection/from-structure", new SelectionFromStructureHandler());
+            server.createContext("/structure-bounds", new StructureBoundsHandler());
+            server.createContext("/selection/remove", new SelectionRemoveHandler());
             server.setExecutor(Executors.newFixedThreadPool(4));
             server.start();
             StructureEditorMod.LOGGER.info("Structure Editor HTTP server started on http://{}:{}", config.host, config.port);
@@ -145,6 +147,43 @@ public class EditorHttpServer {
         }
     }
 
+
+    // Ephemeral region built from request params for stateless multi-agent use. If both
+    // pos1 and pos2 are present (JSON body objects, or x1/y1/z1 & x2/y2/z2 query params),
+    // returns a stack-local Region with those coords so nothing in the shared selection
+    // store is touched. Otherwise falls back to the stored region named in the request.
+    private SelectionManager.Region resolveWorkingRegion(HttpExchange exchange, JsonObject body) {
+        BlockPos p1 = readPosFromBody(body, "pos1");
+        BlockPos p2 = readPosFromBody(body, "pos2");
+        if(p1 == null || p2 == null) {
+            BlockPos qp1 = readPosFromQuery(exchange, "x1", "y1", "z1");
+            BlockPos qp2 = readPosFromQuery(exchange, "x2", "y2", "z2");
+            if(qp1 != null && qp2 != null) { p1 = qp1; p2 = qp2; }
+        }
+        if(p1 != null && p2 != null) {
+            SelectionManager.Region r = new SelectionManager.Region();
+            r.pos1 = p1;
+            r.pos2 = p2;
+            return r;
+        }
+        return selection.getOrCreateRegion(getRegionName(exchange));
+    }
+
+    private BlockPos readPosFromBody(JsonObject body, String key) {
+        if(body == null || !body.has(key) || !body.get(key).isJsonObject()) return null;
+        try {
+            JsonObject o = body.getAsJsonObject(key);
+            return new BlockPos(o.get("x").getAsInt(), o.get("y").getAsInt(), o.get("z").getAsInt());
+        } catch(Exception e) { return null; }
+    }
+
+    private BlockPos readPosFromQuery(HttpExchange exchange, String xk, String yk, String zk) {
+        String x = queryParam(exchange, xk), y = queryParam(exchange, yk), z = queryParam(exchange, zk);
+        if(x == null || y == null || z == null) return null;
+        try {
+            return new BlockPos(Integer.parseInt(x), Integer.parseInt(y), Integer.parseInt(z));
+        } catch(NumberFormatException e) { return null; }
+    }
 
     private String getRegionName(HttpExchange exchange) {
         String query = exchange.getRequestURI().getQuery();
@@ -284,7 +323,7 @@ public class EditorHttpServer {
                 }
             }
 
-            String result = BlockScanner.scanSelection(mcServer, selection.getOrCreateRegion(getRegionName(exchange)), nameFilter);
+            String result = BlockScanner.scanSelection(mcServer, resolveWorkingRegion(exchange, null), nameFilter);
             sendJson(exchange, 200, result);
         }
     }
@@ -299,7 +338,7 @@ public class EditorHttpServer {
                 exchange.sendResponseHeaders(405, -1);
                 return;
             }
-            String result = BlockScanner.scanContainers(mcServer, selection.getOrCreateRegion(getRegionName(exchange)));
+            String result = BlockScanner.scanContainers(mcServer, resolveWorkingRegion(exchange, null));
             sendJson(exchange, 200, result);
         }
     }
@@ -368,7 +407,7 @@ public class EditorHttpServer {
             try {
                 String bodyStr = readBody(exchange);
                 JsonObject body = bodyStr.trim().isEmpty() ? new JsonObject() : JsonParser.parseString(bodyStr).getAsJsonObject();
-                String result = BlockScanner.saveStructures(mcServer, selection.getOrCreateRegion(getRegionName(exchange)), body);
+                String result = BlockScanner.saveStructures(mcServer, resolveWorkingRegion(exchange, body), body);
                 sendJson(exchange, 200, result);
                 
                 try {
@@ -531,7 +570,7 @@ public class EditorHttpServer {
             }
             try {
                 JsonArray body = JsonParser.parseString(readBody(exchange)).getAsJsonArray();
-                String result = BlockScanner.scanBlocks(mcServer, selection.getOrCreateRegion(getRegionName(exchange)), body);
+                String result = BlockScanner.scanBlocks(mcServer, resolveWorkingRegion(exchange, null), body);
                 sendJson(exchange, 200, result);
             } catch(Exception e) {
                 sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
@@ -550,7 +589,7 @@ public class EditorHttpServer {
             }
             try {
                 JsonArray body = JsonParser.parseString(readBody(exchange)).getAsJsonArray();
-                String result = BlockScanner.scanEntities(mcServer, selection.getOrCreateRegion(getRegionName(exchange)), body);
+                String result = BlockScanner.scanEntities(mcServer, resolveWorkingRegion(exchange, null), body);
                 sendJson(exchange, 200, result);
             } catch(Exception e) {
                 sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
@@ -631,8 +670,7 @@ public class EditorHttpServer {
                 try {
                     String bodyStr = readBody(exchange);
                     JsonObject body = bodyStr.isEmpty() ? new JsonObject() : JsonParser.parseString(bodyStr).getAsJsonObject();
-                    String regionName = body.has("region") ? body.get("region").getAsString() : "default";
-                    SelectionManager.Region r = selection.getRegion(regionName);
+                    SelectionManager.Region r = resolveWorkingRegion(exchange, body);
                     JsonArray posList = body.has("positions") ? body.getAsJsonArray("positions") : null;
                     String result = BlockScanner.getBlocks(mcServer, r, posList);
                     sendJson(exchange, 200, result);
@@ -655,8 +693,7 @@ public class EditorHttpServer {
                     JsonObject body = JsonParser.parseString(readBody(exchange)).getAsJsonObject();
                     JsonArray blocks = body.getAsJsonArray("blocks");
                     boolean allowOutside = body.has("allow_outside_selection") && body.get("allow_outside_selection").getAsBoolean();
-                    String regionName = body.has("region") ? body.get("region").getAsString() : "default";
-                    SelectionManager.Region r = selection.getRegion(regionName);
+                    SelectionManager.Region r = resolveWorkingRegion(exchange, body);
                     String result = BlockScanner.setBlocks(mcServer, blocks, r, allowOutside);
                     sendJson(exchange, 200, result);
                 } catch(Exception e) {
@@ -676,8 +713,7 @@ public class EditorHttpServer {
             if ("POST".equals(exchange.getRequestMethod())) {
                 try {
                     JsonObject body = JsonParser.parseString(readBody(exchange)).getAsJsonObject();
-                    String regionName = body.has("region") ? body.get("region").getAsString() : "default";
-                    SelectionManager.Region r = selection.getRegion(regionName);
+                    SelectionManager.Region r = resolveWorkingRegion(exchange, body);
                     JsonArray findIds = body.getAsJsonArray("find");
                     String replaceId = body.get("replace").getAsString();
                     boolean dryRun = !body.has("dry_run") || body.get("dry_run").getAsBoolean();
@@ -842,6 +878,183 @@ public class EditorHttpServer {
         }
     }
 
+    // GET /structure-bounds?name=&dim= — return the bbox that covers both the structure
+    // block itself and the region it saves, without writing to any stored selection.
+    // Read-only companion to /selection/from-structure for stateless multi-agent use.
+    class StructureBoundsHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if(!"GET".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            String name = queryParam(exchange, "name");
+            if(name == null || name.isEmpty()) {
+                sendJson(exchange, 400, GSON.toJson(errorJson("Missing 'name' query param")));
+                return;
+            }
+            String dimRaw = queryParam(exchange, "dim");
+            RegistryKey<World> dim = resolveDim(dimRaw);
+            if(dim == null) {
+                sendJson(exchange, 400, GSON.toJson(errorJson("Unrecognised dim: " + dimRaw)));
+                return;
+            }
+            JsonObject out = resolveStructureBounds(name, dim);
+            int status = out.has("error") ? (out.get("error").getAsString().equals("ambiguous") ? 409 : 404) : 200;
+            sendJson(exchange, status, GSON.toJson(out));
+        }
+    }
+
+    // Shared lookup used by /structure-bounds and /selection/from-structure. Returns a
+    // JsonObject that either has an "error" key describing the failure (missing tracker,
+    // no match, ambiguous, not_a_structure_block, ...) or the bounds payload
+    // (pos1, pos2, structure_block, structure_size, mode, dim).
+    private JsonObject resolveStructureBounds(String name, RegistryKey<World> dim) {
+        SbsRegistryReader.Result r = SbsRegistryReader.read(mcServer, dim);
+        if(!r.present) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "sbs_tracker_missing");
+            err.addProperty("dim", dim.getValue().toString());
+            return err;
+        }
+        java.util.List<SbsRegistryReader.Entry> matches = new java.util.ArrayList<>();
+        for(SbsRegistryReader.Entry e : r.entries) {
+            if(e.name.equals(name)) matches.add(e);
+        }
+        if(matches.isEmpty()) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "not_found");
+            err.addProperty("message", "No structure block with name '" + name + "' in dim " + dim.getValue());
+            return err;
+        }
+        if(matches.size() > 1) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "ambiguous");
+            err.addProperty("message", matches.size() + " structure blocks share name '" + name + "'.");
+            JsonArray positions = new JsonArray();
+            for(SbsRegistryReader.Entry e : matches) {
+                JsonObject p = new JsonObject();
+                p.addProperty("x", e.pos.getX()); p.addProperty("y", e.pos.getY()); p.addProperty("z", e.pos.getZ());
+                p.addProperty("mode", e.mode);
+                positions.add(p);
+            }
+            err.add("candidates", positions);
+            return err;
+        }
+        SbsRegistryReader.Entry entry = matches.get(0);
+        ServerWorld world = mcServer.getWorld(dim);
+        if(world == null) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "no_world");
+            err.addProperty("message", "Server has no loaded world for dim " + dim.getValue());
+            return err;
+        }
+        final BlockPos entryPos = entry.pos;
+        java.util.concurrent.CompletableFuture<StructureBlockBlockEntity> beFuture = new java.util.concurrent.CompletableFuture<>();
+        mcServer.execute(() -> {
+            try {
+                world.getChunk(entryPos.getX() >> 4, entryPos.getZ() >> 4);
+                BlockEntity found = world.getBlockEntity(entryPos);
+                beFuture.complete(found instanceof StructureBlockBlockEntity s ? s : null);
+            } catch(Exception e) {
+                beFuture.completeExceptionally(e);
+            }
+        });
+        StructureBlockBlockEntity sbe;
+        try {
+            sbe = beFuture.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        } catch(Exception e) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "timeout");
+            err.addProperty("message", "Timed out loading chunk at " + entryPos.toShortString());
+            return err;
+        }
+        if(sbe == null) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "not_a_structure_block");
+            err.addProperty("message", "Tracker says a structure block '" + name + "' is at " + entryPos.toShortString() + " but that block is not a structure block (SBS tracker stale, or the block was broken).");
+            return err;
+        }
+
+        BlockPos sbPos = entry.pos;
+        BlockPos offset = sbe.getOffset();
+        NbtCompound nbt = sbe.createNbt(world.getRegistryManager());
+        int sx = nbt.getInt("sizeX").orElse(0);
+        int sy = nbt.getInt("sizeY").orElse(0);
+        int sz = nbt.getInt("sizeZ").orElse(0);
+        BlockPos regionMin = sbPos.add(offset);
+        BlockPos regionMax = regionMin.add(Math.max(sx - 1, 0), Math.max(sy - 1, 0), Math.max(sz - 1, 0));
+        int minX = Math.min(sbPos.getX(), Math.min(regionMin.getX(), regionMax.getX()));
+        int minY = Math.min(sbPos.getY(), Math.min(regionMin.getY(), regionMax.getY()));
+        int minZ = Math.min(sbPos.getZ(), Math.min(regionMin.getZ(), regionMax.getZ()));
+        int maxX = Math.max(sbPos.getX(), Math.max(regionMin.getX(), regionMax.getX()));
+        int maxY = Math.max(sbPos.getY(), Math.max(regionMin.getY(), regionMax.getY()));
+        int maxZ = Math.max(sbPos.getZ(), Math.max(regionMin.getZ(), regionMax.getZ()));
+
+        JsonObject ok = new JsonObject();
+        ok.addProperty("success", true);
+        ok.addProperty("name", name);
+        ok.addProperty("mode", nbt.getString("mode").orElse(entry.mode));
+        ok.addProperty("dim", dim.getValue().toString());
+        JsonObject sbJ = new JsonObject();
+        sbJ.addProperty("x", sbPos.getX()); sbJ.addProperty("y", sbPos.getY()); sbJ.addProperty("z", sbPos.getZ());
+        ok.add("structure_block", sbJ);
+        JsonObject p1 = new JsonObject();
+        p1.addProperty("x", minX); p1.addProperty("y", minY); p1.addProperty("z", minZ);
+        ok.add("pos1", p1);
+        JsonObject p2 = new JsonObject();
+        p2.addProperty("x", maxX); p2.addProperty("y", maxY); p2.addProperty("z", maxZ);
+        ok.add("pos2", p2);
+        JsonObject size = new JsonObject();
+        size.addProperty("x", sx); size.addProperty("y", sy); size.addProperty("z", sz);
+        ok.add("structure_size", size);
+        return ok;
+    }
+
+    // POST /selection/remove — remove a stored selection region.
+    // Body: { "name": "..." } removes that one region; { "all": true } removes every region
+    // (default is reset to empty rather than deleted so the wand always has something to bind).
+    class SelectionRemoveHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!"POST".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            try {
+                String bodyStr = readBody(exchange);
+                JsonObject body = bodyStr.trim().isEmpty() ? new JsonObject() : JsonParser.parseString(bodyStr).getAsJsonObject();
+                boolean all = body.has("all") && !body.get("all").isJsonNull() && body.get("all").getAsBoolean();
+                JsonObject ok = new JsonObject();
+                if(all) {
+                    int n = selection.removeAll();
+                    StructureEditorMod.syncSelectionsToAll();
+                    ok.addProperty("success", true);
+                    ok.addProperty("removed", n);
+                    ok.addProperty("scope", "all");
+                } else if(body.has("name") && !body.get("name").isJsonNull()) {
+                    String name = body.get("name").getAsString();
+                    boolean existed = selection.getRegions().containsKey(name);
+                    selection.clear(name);
+                    StructureEditorMod.syncSelectionsToAll();
+                    ok.addProperty("success", true);
+                    ok.addProperty("removed", existed ? 1 : 0);
+                    ok.addProperty("name", name);
+                    if(name.equals("default")) ok.addProperty("note", "'default' was reset to empty rather than deleted.");
+                } else {
+                    sendJson(exchange, 400, GSON.toJson(errorJson("Provide either 'name' or 'all: true' in body.")));
+                    return;
+                }
+                sendJson(exchange, 200, GSON.toJson(ok));
+            } catch(Exception e) {
+                sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
+            }
+        }
+    }
+
     // POST /selection/from-structure — resolve a structure block by its saved-structure name
     // (via SBS's tracker), then set the selection to a bbox that covers both the structure
     // block itself AND the region it saves. Body: { "name": "...", "dim"?: "...", "region"?: "..." }
@@ -870,120 +1083,25 @@ public class EditorHttpServer {
                     return;
                 }
 
-                SbsRegistryReader.Result r = SbsRegistryReader.read(mcServer, dim);
-                if(!r.present) {
-                    JsonObject err = new JsonObject();
-                    err.addProperty("error", "sbs_tracker_missing");
-                    err.addProperty("dim", dim.getValue().toString());
-                    sendJson(exchange, 404, GSON.toJson(err));
+                JsonObject bounds = resolveStructureBounds(name, dim);
+                if(bounds.has("error")) {
+                    String err = bounds.get("error").getAsString();
+                    int status = err.equals("ambiguous") ? 409 : err.equals("not_a_structure_block") ? 410 : err.equals("timeout") ? 504 : 404;
+                    sendJson(exchange, status, GSON.toJson(bounds));
                     return;
                 }
 
-                java.util.List<SbsRegistryReader.Entry> matches = new java.util.ArrayList<>();
-                for(SbsRegistryReader.Entry e : r.entries) {
-                    if(e.name.equals(name)) matches.add(e);
-                }
-                if(matches.isEmpty()) {
-                    sendJson(exchange, 404, GSON.toJson(errorJson("No structure block with name '" + name + "' in dim " + dim.getValue())));
-                    return;
-                }
-                if(matches.size() > 1) {
-                    JsonObject err = new JsonObject();
-                    err.addProperty("error", "ambiguous");
-                    err.addProperty("message", matches.size() + " structure blocks share name '" + name + "'. Disambiguate by editing the SB names, or select by coords.");
-                    JsonArray positions = new JsonArray();
-                    for(SbsRegistryReader.Entry e : matches) {
-                        JsonObject p = new JsonObject();
-                        p.addProperty("x", e.pos.getX());
-                        p.addProperty("y", e.pos.getY());
-                        p.addProperty("z", e.pos.getZ());
-                        p.addProperty("mode", e.mode);
-                        positions.add(p);
-                    }
-                    err.add("candidates", positions);
-                    sendJson(exchange, 409, GSON.toJson(err));
-                    return;
-                }
-
-                SbsRegistryReader.Entry entry = matches.get(0);
-                ServerWorld world = mcServer.getWorld(dim);
-                if(world == null) {
-                    sendJson(exchange, 500, GSON.toJson(errorJson("Server has no loaded world for dim " + dim.getValue())));
-                    return;
-                }
-
-                // Hop to the server thread and force-load the SB's chunk so getBlockEntity
-                // returns something even when nobody is nearby (same pattern BlockScanner uses).
-                final BlockPos entryPos = entry.pos;
-                java.util.concurrent.CompletableFuture<StructureBlockBlockEntity> beFuture = new java.util.concurrent.CompletableFuture<>();
-                mcServer.execute(() -> {
-                    try {
-                        world.getChunk(entryPos.getX() >> 4, entryPos.getZ() >> 4);
-                        BlockEntity found = world.getBlockEntity(entryPos);
-                        beFuture.complete(found instanceof StructureBlockBlockEntity s ? s : null);
-                    } catch(Exception e) {
-                        beFuture.completeExceptionally(e);
-                    }
-                });
-                StructureBlockBlockEntity sbe;
-                try {
-                    sbe = beFuture.get(10, java.util.concurrent.TimeUnit.SECONDS);
-                } catch(java.util.concurrent.TimeoutException te) {
-                    sendJson(exchange, 504, GSON.toJson(errorJson("Timed out waiting for server thread to load chunk at " + entryPos.toShortString())));
-                    return;
-                }
-                if(sbe == null) {
-                    JsonObject err = new JsonObject();
-                    err.addProperty("error", "not_a_structure_block");
-                    err.addProperty("message", "Tracker says a structure block '" + name + "' is at " + entryPos.toShortString() + " but that block is not a structure block (SBS tracker stale, or the block was broken).");
-                    sendJson(exchange, 410, GSON.toJson(err));
-                    return;
-                }
-
-                BlockPos sbPos = entry.pos;
-                BlockPos offset = sbe.getOffset();
-                NbtCompound nbt = sbe.createNbt(world.getRegistryManager());
-                int sx = nbt.getInt("sizeX").orElse(0);
-                int sy = nbt.getInt("sizeY").orElse(0);
-                int sz = nbt.getInt("sizeZ").orElse(0);
-
-                BlockPos regionMin = sbPos.add(offset);
-                // structure size can be zero (LOAD/CORNER/DATA modes typically); guard the -1
-                BlockPos regionMax = regionMin.add(Math.max(sx - 1, 0), Math.max(sy - 1, 0), Math.max(sz - 1, 0));
-
-                int minX = Math.min(sbPos.getX(), Math.min(regionMin.getX(), regionMax.getX()));
-                int minY = Math.min(sbPos.getY(), Math.min(regionMin.getY(), regionMax.getY()));
-                int minZ = Math.min(sbPos.getZ(), Math.min(regionMin.getZ(), regionMax.getZ()));
-                int maxX = Math.max(sbPos.getX(), Math.max(regionMin.getX(), regionMax.getX()));
-                int maxY = Math.max(sbPos.getY(), Math.max(regionMin.getY(), regionMax.getY()));
-                int maxZ = Math.max(sbPos.getZ(), Math.max(regionMin.getZ(), regionMax.getZ()));
-
-                BlockPos min = new BlockPos(minX, minY, minZ);
-                BlockPos max = new BlockPos(maxX, maxY, maxZ);
+                JsonObject p1 = bounds.getAsJsonObject("pos1");
+                JsonObject p2 = bounds.getAsJsonObject("pos2");
+                BlockPos min = new BlockPos(p1.get("x").getAsInt(), p1.get("y").getAsInt(), p1.get("z").getAsInt());
+                BlockPos max = new BlockPos(p2.get("x").getAsInt(), p2.get("y").getAsInt(), p2.get("z").getAsInt());
                 selection.setPos1(regionName, min);
                 selection.setPos2(regionName, max);
                 StructureEditorMod.syncSelectionsToAll();
                 broadcastActionBar("Selection '" + regionName + "' set to structure '" + name + "'");
 
-                JsonObject ok = new JsonObject();
-                ok.addProperty("success", true);
-                ok.addProperty("name", name);
-                ok.addProperty("mode", nbt.getString("mode").orElse(entry.mode));
-                ok.addProperty("region", regionName);
-                ok.addProperty("dim", dim.getValue().toString());
-                JsonObject sbJ = new JsonObject();
-                sbJ.addProperty("x", sbPos.getX()); sbJ.addProperty("y", sbPos.getY()); sbJ.addProperty("z", sbPos.getZ());
-                ok.add("structure_block", sbJ);
-                JsonObject p1 = new JsonObject();
-                p1.addProperty("x", min.getX()); p1.addProperty("y", min.getY()); p1.addProperty("z", min.getZ());
-                ok.add("pos1", p1);
-                JsonObject p2 = new JsonObject();
-                p2.addProperty("x", max.getX()); p2.addProperty("y", max.getY()); p2.addProperty("z", max.getZ());
-                ok.add("pos2", p2);
-                JsonObject size = new JsonObject();
-                size.addProperty("x", sx); size.addProperty("y", sy); size.addProperty("z", sz);
-                ok.add("structure_size", size);
-                sendJson(exchange, 200, GSON.toJson(ok));
+                bounds.addProperty("region", regionName);
+                sendJson(exchange, 200, GSON.toJson(bounds));
             } catch(Exception e) {
                 sendJson(exchange, 400, GSON.toJson(errorJson("Bad request: " + e.getMessage())));
             }

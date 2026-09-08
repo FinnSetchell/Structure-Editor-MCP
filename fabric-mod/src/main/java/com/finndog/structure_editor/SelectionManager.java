@@ -89,6 +89,16 @@ public class SelectionManager {
         save();
     }
 
+    // Removes every named region. The "default" region is reset to an empty Region rather
+    // than deleted so the wand always has something to bind to.
+    public int removeAll() {
+        int n = regions.size();
+        regions.clear();
+        regions.put("default", new Region());
+        save();
+        return n;
+    }
+
     public void save() {
         try {
             SAVE_FILE.getParentFile().mkdirs();

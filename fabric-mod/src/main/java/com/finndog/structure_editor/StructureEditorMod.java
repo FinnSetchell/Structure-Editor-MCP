@@ -42,6 +42,8 @@ public class StructureEditorMod implements ModInitializer {
     @Override
     public void onInitialize() {
         config = ModConfig.load();
+        PrintEntityMethods.print();
+        TestMethods.print();
         LOGGER.info("Structure Editor initialising — HTTP bridge on {}:{}", config.host, config.port);
 
         httpServer = new EditorHttpServer(config);
@@ -107,13 +109,28 @@ public class StructureEditorMod implements ModInitializer {
                         }))
                     .then(literal("clear")
                         .then(argument("name", word())
+                            .suggests((ctx, builder) -> {
+                                for (String region : httpServer.getSelection().getRegions().keySet()) {
+                                    if (region.startsWith(builder.getRemainingLowerCase())) {
+                                        builder.suggest(region);
+                                    }
+                                }
+                                return builder.buildFuture();
+                            })
                             .executes(ctx -> {
                                 String name = getString(ctx, "name");
                                 httpServer.getSelection().clear(name);
                                 syncSelectionsToAll();
                                 ctx.getSource().sendFeedback(() -> Text.literal("§7[StructureEditor]§f Cleared region: " + name), false);
                                 return 1;
-                            }))))
+                            })))
+                    .then(literal("clearall")
+                        .executes(ctx -> {
+                            int n = httpServer.getSelection().removeAll();
+                            syncSelectionsToAll();
+                            ctx.getSource().sendFeedback(() -> Text.literal("§7[StructureEditor]§f Cleared all " + n + " regions (default reset to empty)"), false);
+                            return 1;
+                        })))
                 .then(literal("clear")
                     .executes(ctx -> {
                         ServerPlayerEntity player = ctx.getSource().getPlayer();
