@@ -80,7 +80,7 @@ function mergeBoundsIntoBody(body: Record<string, unknown>, pos1?: Pos, pos2?: P
 
 const server = new McpServer({
     name: "structure-editor",
-    version: "1.4.3",
+    version: "1.4.4",
 });
 
 // --- health ---
