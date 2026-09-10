@@ -66,6 +66,7 @@ public class EditorHttpServer {
             server.createContext("/selection/from-structure", new SelectionFromStructureHandler());
             server.createContext("/structure-bounds", new StructureBoundsHandler());
             server.createContext("/selection/remove", new SelectionRemoveHandler());
+            server.createContext("/log/tail", new LogTailHandler());
             server.setExecutor(Executors.newFixedThreadPool(4));
             server.start();
             StructureEditorMod.LOGGER.info("Structure Editor HTTP server started on http://{}:{}", config.host, config.port);
@@ -1011,6 +1012,51 @@ public class EditorHttpServer {
         size.addProperty("x", sx); size.addProperty("y", sy); size.addProperty("z", sz);
         ok.add("structure_size", size);
         return ok;
+    }
+
+    // GET /log/tail?lines=N&grep=substr — last N lines of logs/latest.log, optionally
+    // filtered to lines containing grep (case-insensitive). Read-only; lets a remote caller
+    // see vanilla/mod log output (mixin apply errors, "Failed to read chunk", mod warns)
+    // without a hosting-panel round trip.
+    class LogTailHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!"GET".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            int lines = 200;
+            String linesRaw = queryParam(exchange, "lines");
+            if(linesRaw != null) { try { lines = Math.max(1, Math.min(5000, Integer.parseInt(linesRaw))); } catch(NumberFormatException ignored) {} }
+            String grep = queryParam(exchange, "grep");
+            String grepLower = grep == null ? null : grep.toLowerCase(java.util.Locale.ROOT);
+            try {
+                java.nio.file.Path log = net.fabricmc.loader.api.FabricLoader.getInstance().getGameDir().resolve("logs").resolve("latest.log");
+                if(!java.nio.file.Files.isRegularFile(log)) {
+                    sendJson(exchange, 404, GSON.toJson(errorJson("No logs/latest.log at " + log)));
+                    return;
+                }
+                java.util.List<String> all = java.nio.file.Files.readAllLines(log, StandardCharsets.UTF_8);
+                java.util.List<String> picked = new java.util.ArrayList<>();
+                for(int i = all.size() - 1; i >= 0 && picked.size() < lines; i--) {
+                    String l = all.get(i);
+                    if(grepLower == null || l.toLowerCase(java.util.Locale.ROOT).contains(grepLower)) picked.add(l);
+                }
+                java.util.Collections.reverse(picked);
+                JsonObject out = new JsonObject();
+                out.addProperty("file", log.toString());
+                out.addProperty("total_lines", all.size());
+                out.addProperty("returned", picked.size());
+                if(grep != null) out.addProperty("grep", grep);
+                JsonArray arr = new JsonArray();
+                for(String l : picked) arr.add(l);
+                out.add("lines", arr);
+                sendJson(exchange, 200, GSON.toJson(out));
+            } catch(Exception e) {
+                sendJson(exchange, 500, GSON.toJson(errorJson("Failed to read log: " + e.getMessage())));
+            }
+        }
     }
 
     // POST /selection/remove — remove a stored selection region.

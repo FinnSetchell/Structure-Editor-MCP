@@ -297,6 +297,20 @@ public class BlockScanner {
     // vanilla /forceload uses.
     private static final int SAVE_TICKET_RADIUS = 2;
 
+    // Must run on the server thread. Idempotent: removing a ticket that isn't there is a no-op.
+    private static void releaseSaveTickets(MinecraftServer server, java.util.List<SaveTarget> targets) {
+        ServerWorld world = server.getOverworld();
+        for (SaveTarget t : targets) {
+            for (net.minecraft.util.math.ChunkPos cp : t.ticketChunks) {
+                try {
+                    world.getChunkManager().removeTicket(net.minecraft.server.world.ChunkTicketType.FORCED, cp, SAVE_TICKET_RADIUS);
+                } catch (Exception e) {
+                    StructureEditorMod.LOGGER.warn("failed to release save ticket at {}: {}", cp, e.toString());
+                }
+            }
+        }
+    }
+
     public static String saveStructures(MinecraftServer server, SelectionManager.Region selection, JsonObject request) {
         // Phase 1 - server thread: enumerate structure blocks in scope, compute each SB's
         // captured AABB and the chunks it overlaps, then add a FORCED chunk-loading ticket
@@ -306,9 +320,11 @@ public class BlockScanner {
         // produced entity-less saves on cold chunks.
         CompletableFuture<Object> planFuture = new CompletableFuture<>();
         server.execute(() -> {
+            // Declared outside the try so a mid-enumeration failure can release whatever
+            // tickets were already added instead of leaking persisted FORCED tickets.
+            java.util.List<SaveTarget> targets = new java.util.ArrayList<>();
             try {
                 ServerWorld world = server.getOverworld();
-                java.util.List<SaveTarget> targets = new java.util.ArrayList<>();
 
                 if (request.has("x") && request.has("y") && request.has("z")) {
                     BlockPos pos = new BlockPos(request.get("x").getAsInt(), request.get("y").getAsInt(), request.get("z").getAsInt());
@@ -365,6 +381,7 @@ public class BlockScanner {
                 }
                 planFuture.complete(targets);
             } catch (Exception e) {
+                releaseSaveTickets(server, targets);
                 planFuture.completeExceptionally(e);
             }
         });
@@ -428,7 +445,31 @@ public class BlockScanner {
         final long waitMs = System.currentTimeMillis() - waitStart;
         final boolean allEntitySectionsLoaded = stillPending.isEmpty();
         if (!allEntitySectionsLoaded) {
-            StructureEditorMod.LOGGER.warn("save_structures: {} of {} chunks never reported entity sections loaded after {}ms", stillPending.size(), neededChunks.size(), waitMs);
+            // Log the stage each stuck chunk stalled at, not just that it stalled.
+            final java.util.Set<Long> stuck = new java.util.HashSet<>(stillPending);
+            CompletableFuture<String> stateFuture = new CompletableFuture<>();
+            server.execute(() -> {
+                try {
+                    ServerWorld world = server.getOverworld();
+                    ServerEntityManagerInvoker em = (ServerEntityManagerInvoker) ((ServerWorldAccessor) world).structureEditor$getEntityManager();
+                    StringBuilder sb = new StringBuilder();
+                    for (long key : stuck) {
+                        net.minecraft.util.math.ChunkPos cp = new net.minecraft.util.math.ChunkPos(key);
+                        Object load = em.structureEditor$getManagedStatuses().get(key);
+                        Object vis = em.structureEditor$getTrackingStatuses().get(key);
+                        sb.append('[').append(cp.x).append(',').append(cp.z).append(" load=")
+                          .append(load == null ? "FRESH" : load).append(" vis=")
+                          .append(vis == null ? "ABSENT" : vis).append(" blockTicking=")
+                          .append(world.getChunkManager().isTickingFutureReady(key)).append("] ");
+                    }
+                    stateFuture.complete(sb.toString());
+                } catch (Exception e) {
+                    stateFuture.complete("(state read failed: " + e + ")");
+                }
+            });
+            String states;
+            try { states = stateFuture.get(2, TimeUnit.SECONDS); } catch (Exception e) { states = "(state read timed out)"; }
+            StructureEditorMod.LOGGER.warn("save_structures: {} of {} chunks never reported entity sections loaded after {}ms: {}", stillPending.size(), neededChunks.size(), waitMs, states);
         }
 
         // Phase 2 - server thread: run the actual save and record per-target entity counts so
@@ -458,9 +499,22 @@ public class BlockScanner {
                         int chunksTotal = target.ticketChunks.size();
                         int chunksEntitiesLoaded = 0;
                         int chunksTickingReady = 0;
+                        JsonArray chunkStates = new JsonArray();
                         for (net.minecraft.util.math.ChunkPos cp : target.ticketChunks) {
-                            if (em.structureEditor$isLoaded(cp.toLong())) chunksEntitiesLoaded++;
-                            if (world.getChunkManager().isTickingFutureReady(cp.toLong())) chunksTickingReady++;
+                            long key = cp.toLong();
+                            boolean loaded = em.structureEditor$isLoaded(key);
+                            boolean ticking = world.getChunkManager().isTickingFutureReady(key);
+                            if (loaded) chunksEntitiesLoaded++;
+                            if (ticking) chunksTickingReady++;
+                            Object load = em.structureEditor$getManagedStatuses().get(key);
+                            Object vis = em.structureEditor$getTrackingStatuses().get(key);
+                            JsonObject cs = new JsonObject();
+                            cs.addProperty("cx", cp.x);
+                            cs.addProperty("cz", cp.z);
+                            cs.addProperty("entity_load", load == null ? "FRESH" : load.toString());
+                            cs.addProperty("entity_visibility", vis == null ? "ABSENT" : vis.toString());
+                            cs.addProperty("block_ticking", ticking);
+                            chunkStates.add(cs);
                         }
                         int entityCount = target.bounds == null ? -1 : world.getOtherEntities(null, target.bounds, e -> true).size();
                         boolean success = structBlock.saveStructure();
@@ -469,18 +523,20 @@ public class BlockScanner {
                         item.addProperty("chunks", chunksTotal);
                         item.addProperty("chunks_entity_sections_loaded", chunksEntitiesLoaded);
                         item.addProperty("chunks_ticking_ready", chunksTickingReady);
+                        item.add("chunk_states", chunkStates);
                     }
                     savedList.add(item);
-
-                    for (net.minecraft.util.math.ChunkPos cp : target.ticketChunks) {
-                        world.getChunkManager().removeTicket(net.minecraft.server.world.ChunkTicketType.FORCED, cp, SAVE_TICKET_RADIUS);
-                    }
                 }
                 result.addProperty("count", savedList.size());
                 result.add("results", savedList);
                 saveFuture.complete(result);
             } catch (Exception e) {
                 saveFuture.completeExceptionally(e);
+            } finally {
+                // FORCED is the persisted /forceload ticket type. If it is not removed it
+                // survives restarts and pins the chunk forever, so release every ticket we
+                // added no matter how the save went.
+                releaseSaveTickets(server, targets);
             }
         });
 

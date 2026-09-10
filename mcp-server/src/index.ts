@@ -80,7 +80,7 @@ function mergeBoundsIntoBody(body: Record<string, unknown>, pos1?: Pos, pos2?: P
 
 const server = new McpServer({
     name: "structure-editor",
-    version: "1.4.4",
+    version: "1.4.5",
 });
 
 // --- health ---
@@ -912,6 +912,25 @@ Errors with a candidates list if more than one SB shares the name.`,
         if (dim) params.append("dim", dim);
         const data = await modGet("/structure-bounds?" + params.toString());
         return textResult(data);
+    }
+);
+
+server.tool(
+    "read_server_log",
+    `Read the tail of the Minecraft server's logs/latest.log. Use it to see mixin apply errors, vanilla warnings like "Failed to read chunk", and this mod's own diagnostics (e.g. save_structures entity-load warnings) without a hosting-panel round trip.
+Optional 'grep' filters to lines containing the substring (case-insensitive), applied before the line cap so you get the last N *matching* lines.`,
+    {
+        lines: z.number().int().min(1).max(5000).optional().describe("How many lines to return from the end (default 200)."),
+        grep: z.string().optional().describe("Only return lines containing this substring, case-insensitive."),
+    },
+    async ({ lines, grep }) => {
+        const params = new URLSearchParams();
+        if (lines !== undefined) params.append("lines", String(lines));
+        if (grep) params.append("grep", grep);
+        const data = await modGet("/log/tail" + (params.toString() ? "?" + params.toString() : "")) as any;
+        if (data.error) return textResult(data);
+        const header = `${data.file} (${data.total_lines} lines total, showing ${data.returned}${data.grep ? ` matching "${data.grep}"` : ""}):`;
+        return { content: [{ type: "text" as const, text: [header, ...data.lines].join("\n") }] };
     }
 );
 
