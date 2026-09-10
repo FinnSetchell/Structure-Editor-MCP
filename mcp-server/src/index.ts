@@ -80,7 +80,7 @@ function mergeBoundsIntoBody(body: Record<string, unknown>, pos1?: Pos, pos2?: P
 
 const server = new McpServer({
     name: "structure-editor",
-    version: "1.4.5",
+    version: "1.4.6",
 });
 
 // --- health ---
@@ -931,6 +931,20 @@ Optional 'grep' filters to lines containing the substring (case-insensitive), ap
         if (data.error) return textResult(data);
         const header = `${data.file} (${data.total_lines} lines total, showing ${data.returned}${data.grep ? ` matching "${data.grep}"` : ""}):`;
         return { content: [{ type: "text" as const, text: [header, ...data.lines].join("\n") }] };
+    }
+);
+
+server.tool(
+    "get_chunk_state",
+    `Read-only diagnostics for the chunk containing a block position: whether the block chunk is resident and block-ticking, and the entity manager's per-chunk load state (FRESH / PENDING / LOADED) and visibility (HIDDEN / TRACKED / TICKING / ABSENT).
+Loads nothing, so it can be polled to confirm an area has genuinely gone cold, or to diagnose a save_structures result whose entities_captured was unexpectedly 0.`,
+    {
+        x: z.number().int().describe("Block X coordinate (any block inside the chunk)."),
+        z: z.number().int().describe("Block Z coordinate (any block inside the chunk)."),
+    },
+    async ({ x, z: zCoord }) => {
+        const data = await modGet(`/chunk-state?x=${x}&z=${zCoord}`);
+        return textResult(data);
     }
 );
 

@@ -28,6 +28,7 @@ public class EditorHttpServer {
     private final ModConfig config;
     private final SelectionManager selection = new SelectionManager();
     private HttpServer server;
+    private java.util.concurrent.ExecutorService executor;
     private volatile MinecraftServer mcServer;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -38,6 +39,10 @@ public class EditorHttpServer {
         // Grab the MinecraftServer reference as soon as it's ready
         ServerLifecycleEvents.SERVER_STARTED.register(s -> this.mcServer = s);
         ServerLifecycleEvents.SERVER_STOPPING.register(s -> this.mcServer = null);
+        // Tear the HTTP bridge down once the game server has fully stopped. Without this the
+        // executor threads keep the JVM alive after /stop: a zombie process that still owns
+        // the port, answers serverReady:false, and blocks the next instance's bind.
+        ServerLifecycleEvents.SERVER_STOPPED.register(s -> stop());
     }
 
     public void start() {
@@ -67,7 +72,14 @@ public class EditorHttpServer {
             server.createContext("/structure-bounds", new StructureBoundsHandler());
             server.createContext("/selection/remove", new SelectionRemoveHandler());
             server.createContext("/log/tail", new LogTailHandler());
-            server.setExecutor(Executors.newFixedThreadPool(4));
+            server.createContext("/chunk-state", new ChunkStateHandler());
+            // Daemon threads so the bridge can never pin the JVM open on its own.
+            executor = Executors.newFixedThreadPool(4, r -> {
+                Thread t = new Thread(r, "structure-editor-http");
+                t.setDaemon(true);
+                return t;
+            });
+            server.setExecutor(executor);
             server.start();
             StructureEditorMod.LOGGER.info("Structure Editor HTTP server started on http://{}:{}", config.host, config.port);
         } catch(IOException e) {
@@ -76,7 +88,15 @@ public class EditorHttpServer {
     }
 
     public void stop() {
-        if(server != null) server.stop(0);
+        if(server != null) {
+            server.stop(0);
+            server = null;
+            StructureEditorMod.LOGGER.info("Structure Editor HTTP server stopped");
+        }
+        if(executor != null) {
+            executor.shutdownNow();
+            executor = null;
+        }
     }
 
     public SelectionManager getSelection() {
@@ -1055,6 +1075,59 @@ public class EditorHttpServer {
                 sendJson(exchange, 200, GSON.toJson(out));
             } catch(Exception e) {
                 sendJson(exchange, 500, GSON.toJson(errorJson("Failed to read log: " + e.getMessage())));
+            }
+        }
+    }
+
+    // GET /chunk-state?x=&z= (block coords) — read-only chunk diagnostics: is the block chunk
+    // resident, is it block-ticking, and the entity manager's per-chunk load state
+    // (FRESH/PENDING/LOADED) and visibility (HIDDEN/TRACKED/TICKING/ABSENT). Does not load
+    // anything, so it can be polled to confirm a chunk has genuinely gone cold.
+    class ChunkStateHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if(!checkAuth(exchange)) return;
+            if(!serverReady(exchange)) return;
+            if(!"GET".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            String xs = queryParam(exchange, "x"), zs = queryParam(exchange, "z");
+            if(xs == null || zs == null) {
+                sendJson(exchange, 400, GSON.toJson(errorJson("Need x and z (block coords)")));
+                return;
+            }
+            final int cx, cz;
+            try { cx = Integer.parseInt(xs) >> 4; cz = Integer.parseInt(zs) >> 4; }
+            catch(NumberFormatException e) { sendJson(exchange, 400, GSON.toJson(errorJson("x and z must be integers"))); return; }
+            java.util.concurrent.CompletableFuture<JsonObject> f = new java.util.concurrent.CompletableFuture<>();
+            mcServer.execute(() -> {
+                try {
+                    ServerWorld world = mcServer.getOverworld();
+                    net.minecraft.util.math.ChunkPos cp = new net.minecraft.util.math.ChunkPos(cx, cz);
+                    long key = cp.toLong();
+                    com.finndog.structure_editor.mixin.ServerEntityManagerInvoker em =
+                        (com.finndog.structure_editor.mixin.ServerEntityManagerInvoker)
+                        ((com.finndog.structure_editor.mixin.ServerWorldAccessor) world).structureEditor$getEntityManager();
+                    Object load = em.structureEditor$getManagedStatuses().get(key);
+                    Object vis = em.structureEditor$getTrackingStatuses().get(key);
+                    JsonObject o = new JsonObject();
+                    o.addProperty("cx", cx);
+                    o.addProperty("cz", cz);
+                    o.addProperty("block_chunk_resident", world.getChunkManager().isChunkLoaded(cx, cz));
+                    o.addProperty("block_ticking", world.getChunkManager().isTickingFutureReady(key));
+                    o.addProperty("entity_load", load == null ? "FRESH" : load.toString());
+                    o.addProperty("entity_visibility", vis == null ? "ABSENT" : vis.toString());
+                    o.addProperty("entities_loaded", em.structureEditor$isLoaded(key));
+                    f.complete(o);
+                } catch(Exception e) {
+                    f.completeExceptionally(e);
+                }
+            });
+            try {
+                sendJson(exchange, 200, GSON.toJson(f.get(5, java.util.concurrent.TimeUnit.SECONDS)));
+            } catch(Exception e) {
+                sendJson(exchange, 500, GSON.toJson(errorJson("chunk-state failed: " + (e.getCause() != null ? e.getCause() : e))));
             }
         }
     }
