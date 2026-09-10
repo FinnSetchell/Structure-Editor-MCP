@@ -240,6 +240,39 @@ public class BlockScanner {
     }
 
     // Triggers the save operation on structure blocks in selection or at coordinates
+    // Vanilla structure block save iterates entities in the structure's bounds and only sees
+    // ones whose entity section is loaded. Force-loading just the SB's own chunk isn't enough
+    // when the save extends into cold neighbouring chunks (armour stands, item frames, mobs
+    // baked into a piece silently drop from the save). Preload every chunk spanning the SB's
+    // (offset -> offset+size) volume before triggering the save. Same trick SBS uses in its
+    // GlobalSaveTask.
+    private static void preloadStructureBoundsChunks(ServerWorld world, BlockPos sbPos, StructureBlockBlockEntity structBlock) {
+        try {
+            BlockPos offset = structBlock.getOffset();
+            NbtCompound nbt = structBlock.createNbt(world.getRegistryManager());
+            int sx = nbt.getInt("sizeX").orElse(0);
+            int sy = nbt.getInt("sizeY").orElse(0);
+            int sz = nbt.getInt("sizeZ").orElse(0);
+            if (sx <= 0 || sy <= 0 || sz <= 0) return; // LOAD/CORNER/DATA modes carry no bounds
+
+            BlockPos minPos = sbPos.add(offset);
+            BlockPos maxPos = minPos.add(sx - 1, sy - 1, sz - 1);
+
+            int minCx = Math.min(minPos.getX(), maxPos.getX()) >> 4;
+            int maxCx = Math.max(minPos.getX(), maxPos.getX()) >> 4;
+            int minCz = Math.min(minPos.getZ(), maxPos.getZ()) >> 4;
+            int maxCz = Math.max(minPos.getZ(), maxPos.getZ()) >> 4;
+
+            for (int cx = minCx; cx <= maxCx; cx++) {
+                for (int cz = minCz; cz <= maxCz; cz++) {
+                    world.getChunk(cx, cz);
+                }
+            }
+        } catch (Exception e) {
+            StructureEditorMod.LOGGER.warn("Failed to preload structure bounds chunks for SB at {}: {}", sbPos, e.toString());
+        }
+    }
+
     public static String saveStructures(MinecraftServer server, SelectionManager.Region selection, JsonObject request) {
         CompletableFuture<JsonObject> future = new CompletableFuture<>();
 
@@ -254,21 +287,22 @@ public class BlockScanner {
                     int y = request.get("y").getAsInt();
                     int z = request.get("z").getAsInt();
                     BlockPos pos = new BlockPos(x, y, z);
-                    
+
                     world.getChunk(pos.getX() >> 4, pos.getZ() >> 4);
                     BlockEntity be = world.getBlockEntity(pos);
 
                     if (be instanceof StructureBlockBlockEntity structBlock) {
+                        preloadStructureBoundsChunks(world, pos, structBlock);
                         boolean success = structBlock.saveStructure();
                         JsonObject item = new JsonObject();
                         item.addProperty("x", pos.getX());
                         item.addProperty("y", pos.getY());
                         item.addProperty("z", pos.getZ());
-                        
+
                         NbtCompound nbt = structBlock.createNbt(server.getRegistryManager());
                         String name = nbt.getString("name").orElse("");
                         item.addProperty("name", name);
-                        
+
                         item.addProperty("success", success);
                         savedList.add(item);
                     } else {
@@ -307,6 +341,7 @@ public class BlockScanner {
                                         
                                         BlockEntity be = chunk.getBlockEntity(pos);
                                         if (be instanceof StructureBlockBlockEntity structBlock) {
+                                            preloadStructureBoundsChunks(world, pos, structBlock);
                                             boolean success = structBlock.saveStructure();
                                             JsonObject item = new JsonObject();
                                             item.addProperty("x", pos.getX());
