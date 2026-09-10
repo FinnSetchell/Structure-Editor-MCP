@@ -6,7 +6,9 @@
   "refmap": "structure-editor-refmap.json",
   "mixins": [
     "LootableContainerBlockEntityMixin",
-    "MinecraftServerMixin"
+    "MinecraftServerMixin",
+    "ServerEntityManagerInvoker",
+    "ServerWorldAccessor"
   ],
   "injectors": {
     "defaultRequire": 1

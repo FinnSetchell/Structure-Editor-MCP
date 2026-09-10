@@ -1,4 +1,6 @@
 package com.finndog.structure_editor;
+import com.finndog.structure_editor.mixin.ServerEntityManagerInvoker;
+import com.finndog.structure_editor.mixin.ServerWorldAccessor;
 import com.finndog.structure_editor.network.SyncSelectionsPayload;
 import com.google.gson.*;
 import com.mojang.serialization.Dynamic;
@@ -381,11 +383,53 @@ public class BlockScanner {
         @SuppressWarnings("unchecked")
         java.util.List<SaveTarget> targets = (java.util.List<SaveTarget>) plan;
 
-        // Wait for FORCED tickets to propagate through the chunk manager and for
-        // PersistentEntitySectionManager to finish reading the entity file for every touched
-        // chunk. 50ms = one tick at 20 TPS; a full second is plenty for a handful of chunks
-        // and cheap compared to the disk read itself.
-        try { Thread.sleep(1000); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+        // Collect every chunk any target needs, then wait on the ACTUAL condition: the entity
+        // manager reporting that chunk's entity sections loaded. A fixed sleep was wrong twice.
+        // After a chunk has been loaded once and released, re-ticketing it does not always get
+        // its entity sections re-read on its own, so each poll also calls readIfFresh, which
+        // schedules the read only when the section is still FRESH (no-op otherwise, so it can
+        // never duplicate entities).
+        java.util.Set<Long> neededChunks = new java.util.LinkedHashSet<>();
+        for (SaveTarget t : targets) for (net.minecraft.util.math.ChunkPos cp : t.ticketChunks) neededChunks.add(cp.toLong());
+
+        long waitStart = System.currentTimeMillis();
+        final long waitDeadline = waitStart + 8000;
+        java.util.Set<Long> stillPending = new java.util.HashSet<>(neededChunks);
+        while (!stillPending.isEmpty() && System.currentTimeMillis() < waitDeadline) {
+            final java.util.Set<Long> toCheck = new java.util.HashSet<>(stillPending);
+            CompletableFuture<java.util.Set<Long>> pollFuture = new CompletableFuture<>();
+            server.execute(() -> {
+                try {
+                    ServerWorld world = server.getOverworld();
+                    ServerEntityManagerInvoker em = (ServerEntityManagerInvoker) ((ServerWorldAccessor) world).structureEditor$getEntityManager();
+                    java.util.Set<Long> loaded = new java.util.HashSet<>();
+                    for (long cp : toCheck) {
+                        if (em.structureEditor$isLoaded(cp)) {
+                            loaded.add(cp);
+                        } else {
+                            em.structureEditor$readIfFresh(cp);
+                        }
+                    }
+                    pollFuture.complete(loaded);
+                } catch (Exception e) {
+                    pollFuture.completeExceptionally(e);
+                }
+            });
+            try {
+                stillPending.removeAll(pollFuture.get(2, TimeUnit.SECONDS));
+            } catch (Exception e) {
+                StructureEditorMod.LOGGER.warn("entity-load poll failed: {}", e.toString());
+                break;
+            }
+            if (!stillPending.isEmpty()) {
+                try { Thread.sleep(50); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); break; }
+            }
+        }
+        final long waitMs = System.currentTimeMillis() - waitStart;
+        final boolean allEntitySectionsLoaded = stillPending.isEmpty();
+        if (!allEntitySectionsLoaded) {
+            StructureEditorMod.LOGGER.warn("save_structures: {} of {} chunks never reported entity sections loaded after {}ms", stillPending.size(), neededChunks.size(), waitMs);
+        }
 
         // Phase 2 - server thread: run the actual save and record per-target entity counts so
         // callers can spot a zero that should not be zero. Also remove the tickets we added
@@ -394,7 +438,10 @@ public class BlockScanner {
         server.execute(() -> {
             try {
                 ServerWorld world = server.getOverworld();
+                ServerEntityManagerInvoker em = (ServerEntityManagerInvoker) ((ServerWorldAccessor) world).structureEditor$getEntityManager();
                 JsonObject result = new JsonObject();
+                result.addProperty("entity_sections_loaded", allEntitySectionsLoaded);
+                result.addProperty("entity_wait_ms", waitMs);
                 JsonArray savedList = new JsonArray();
                 for (SaveTarget target : targets) {
                     JsonObject item = new JsonObject();
@@ -408,10 +455,20 @@ public class BlockScanner {
                         item.addProperty("success", false);
                         item.addProperty("error", "not_a_structure_block");
                     } else {
+                        int chunksTotal = target.ticketChunks.size();
+                        int chunksEntitiesLoaded = 0;
+                        int chunksTickingReady = 0;
+                        for (net.minecraft.util.math.ChunkPos cp : target.ticketChunks) {
+                            if (em.structureEditor$isLoaded(cp.toLong())) chunksEntitiesLoaded++;
+                            if (world.getChunkManager().isTickingFutureReady(cp.toLong())) chunksTickingReady++;
+                        }
                         int entityCount = target.bounds == null ? -1 : world.getOtherEntities(null, target.bounds, e -> true).size();
                         boolean success = structBlock.saveStructure();
                         item.addProperty("success", success);
                         item.addProperty("entities_captured", entityCount);
+                        item.addProperty("chunks", chunksTotal);
+                        item.addProperty("chunks_entity_sections_loaded", chunksEntitiesLoaded);
+                        item.addProperty("chunks_ticking_ready", chunksTickingReady);
                     }
                     savedList.add(item);
 
