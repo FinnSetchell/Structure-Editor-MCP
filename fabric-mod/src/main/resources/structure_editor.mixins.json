@@ -7,6 +7,7 @@
   "mixins": [
     "LootableContainerBlockEntityMixin",
     "MinecraftServerMixin",
+    "MinecraftDedicatedServerMixin",
     "ServerEntityManagerInvoker",
     "ServerWorldAccessor"
   ],
