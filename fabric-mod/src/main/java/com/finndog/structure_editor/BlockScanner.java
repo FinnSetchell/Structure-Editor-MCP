@@ -240,141 +240,192 @@ public class BlockScanner {
     }
 
     // Triggers the save operation on structure blocks in selection or at coordinates
-    // Vanilla structure block save iterates entities in the structure's bounds and only sees
-    // ones whose entity section is loaded. Force-loading just the SB's own chunk isn't enough
-    // when the save extends into cold neighbouring chunks (armour stands, item frames, mobs
-    // baked into a piece silently drop from the save). Preload every chunk spanning the SB's
-    // (offset -> offset+size) volume before triggering the save. Same trick SBS uses in its
-    // GlobalSaveTask.
+    // Force-load every chunk that overlaps the structure's captured volume so vanilla
+    // saveStructure's block iteration sees every intended block. Entity sections are handled
+    // separately by kickEntityLoad below - they don't come along for the ride here.
     private static void preloadStructureBoundsChunks(ServerWorld world, BlockPos sbPos, StructureBlockBlockEntity structBlock) {
+        Box b = structureBoundsBox(world, sbPos, structBlock);
+        if (b == null) return;
+        int minCx = ((int) Math.floor(b.minX)) >> 4;
+        int maxCx = ((int) Math.floor(b.maxX)) >> 4;
+        int minCz = ((int) Math.floor(b.minZ)) >> 4;
+        int maxCz = ((int) Math.floor(b.maxZ)) >> 4;
+        for (int cx = minCx; cx <= maxCx; cx++) {
+            for (int cz = minCz; cz <= maxCz; cz++) {
+                world.getChunk(cx, cz);
+            }
+        }
+    }
+
+    // Returns the AABB the structure's save will iterate for blocks AND entities. Same math
+    // vanilla StructureBlockBlockEntity.saveStructure uses (offset -> offset + size). Returns
+    // null for LOAD/CORNER/DATA modes where size is zero.
+    private static Box structureBoundsBox(ServerWorld world, BlockPos sbPos, StructureBlockBlockEntity structBlock) {
         try {
             BlockPos offset = structBlock.getOffset();
             NbtCompound nbt = structBlock.createNbt(world.getRegistryManager());
             int sx = nbt.getInt("sizeX").orElse(0);
             int sy = nbt.getInt("sizeY").orElse(0);
             int sz = nbt.getInt("sizeZ").orElse(0);
-            if (sx <= 0 || sy <= 0 || sz <= 0) return; // LOAD/CORNER/DATA modes carry no bounds
-
+            if (sx <= 0 || sy <= 0 || sz <= 0) return null;
             BlockPos minPos = sbPos.add(offset);
-            BlockPos maxPos = minPos.add(sx - 1, sy - 1, sz - 1);
-
-            int minCx = Math.min(minPos.getX(), maxPos.getX()) >> 4;
-            int maxCx = Math.max(minPos.getX(), maxPos.getX()) >> 4;
-            int minCz = Math.min(minPos.getZ(), maxPos.getZ()) >> 4;
-            int maxCz = Math.max(minPos.getZ(), maxPos.getZ()) >> 4;
-
-            for (int cx = minCx; cx <= maxCx; cx++) {
-                for (int cz = minCz; cz <= maxCz; cz++) {
-                    world.getChunk(cx, cz);
-                }
-            }
+            BlockPos maxPos = minPos.add(sx, sy, sz);
+            return new Box(
+                Math.min(minPos.getX(), maxPos.getX()), Math.min(minPos.getY(), maxPos.getY()), Math.min(minPos.getZ(), maxPos.getZ()),
+                Math.max(minPos.getX(), maxPos.getX()), Math.max(minPos.getY(), maxPos.getY()), Math.max(minPos.getZ(), maxPos.getZ())
+            );
         } catch (Exception e) {
-            StructureEditorMod.LOGGER.warn("Failed to preload structure bounds chunks for SB at {}: {}", sbPos, e.toString());
+            StructureEditorMod.LOGGER.warn("Failed to compute structure bounds for SB at {}: {}", sbPos, e.toString());
+            return null;
         }
     }
 
-    public static String saveStructures(MinecraftServer server, SelectionManager.Region selection, JsonObject request) {
-        CompletableFuture<JsonObject> future = new CompletableFuture<>();
+    // Kicks an async entity-section load for every chunk covering the box. On 1.17+,
+    // entities live in a separate per-chunk store loaded by PersistentEntitySectionManager
+    // independently of block sections. world.getChunk force-loads block sections but leaves
+    // entity sections cold. Iterating entities via getOtherEntities triggers the async load;
+    // the call itself returns whatever's in-memory right now (may be zero) so we have to
+    // give the load time to complete before actually saving - that gap lives in the caller.
+    private static void kickEntityLoad(ServerWorld world, Box box) {
+        if (box == null) return;
+        world.getOtherEntities(null, box, e -> false);
+    }
 
+    // Small holder for the two-phase save (plan on tick T, wait, then save on tick T+N).
+    private static class SaveTarget {
+        final BlockPos pos;
+        final Box bounds;
+        final String name;
+        SaveTarget(BlockPos pos, Box bounds, String name) { this.pos = pos; this.bounds = bounds; this.name = name; }
+    }
+
+    public static String saveStructures(MinecraftServer server, SelectionManager.Region selection, JsonObject request) {
+        // Phase 1 - on the server thread: enumerate structure blocks in scope, force-load
+        // every chunk overlapping each SB's captured volume for both block sections and
+        // entity sections. See kickEntityLoad's comment for why the entity call is needed
+        // on top of the block-chunk force-load.
+        CompletableFuture<Object> planFuture = new CompletableFuture<>();
         server.execute(() -> {
             try {
-                JsonObject result = new JsonObject();
-                JsonArray savedList = new JsonArray();
                 ServerWorld world = server.getOverworld();
+                java.util.List<SaveTarget> targets = new java.util.ArrayList<>();
 
                 if (request.has("x") && request.has("y") && request.has("z")) {
-                    int x = request.get("x").getAsInt();
-                    int y = request.get("y").getAsInt();
-                    int z = request.get("z").getAsInt();
-                    BlockPos pos = new BlockPos(x, y, z);
-
+                    BlockPos pos = new BlockPos(request.get("x").getAsInt(), request.get("y").getAsInt(), request.get("z").getAsInt());
                     world.getChunk(pos.getX() >> 4, pos.getZ() >> 4);
                     BlockEntity be = world.getBlockEntity(pos);
-
-                    if (be instanceof StructureBlockBlockEntity structBlock) {
-                        preloadStructureBoundsChunks(world, pos, structBlock);
-                        boolean success = structBlock.saveStructure();
-                        JsonObject item = new JsonObject();
-                        item.addProperty("x", pos.getX());
-                        item.addProperty("y", pos.getY());
-                        item.addProperty("z", pos.getZ());
-
-                        NbtCompound nbt = structBlock.createNbt(server.getRegistryManager());
-                        String name = nbt.getString("name").orElse("");
-                        item.addProperty("name", name);
-
-                        item.addProperty("success", success);
-                        savedList.add(item);
-                    } else {
-                        result.addProperty("error", "Block at " + pos.toShortString() + " is not a structure block");
-                        future.complete(result);
+                    if (!(be instanceof StructureBlockBlockEntity structBlock)) {
+                        JsonObject err = new JsonObject();
+                        err.addProperty("error", "Block at " + pos.toShortString() + " is not a structure block");
+                        planFuture.complete(err);
                         return;
                     }
+                    preloadStructureBoundsChunks(world, pos, structBlock);
+                    Box bounds = structureBoundsBox(world, pos, structBlock);
+                    kickEntityLoad(world, bounds);
+                    String name = structBlock.createNbt(server.getRegistryManager()).getString("name").orElse("");
+                    targets.add(new SaveTarget(pos, bounds, name));
                 } else {
                     if (!selection.isComplete()) {
-                        result.addProperty("error", "No complete selection active");
-                        future.complete(result);
+                        JsonObject err = new JsonObject();
+                        err.addProperty("error", "No complete selection active");
+                        planFuture.complete(err);
                         return;
                     }
-
                     BlockPos min = selection.getMin();
                     BlockPos max = selection.getMax();
-
-                    int minChunkX = min.getX() >> 4;
-                    int maxChunkX = max.getX() >> 4;
-                    int minChunkZ = min.getZ() >> 4;
-                    int maxChunkZ = max.getZ() >> 4;
-
+                    int minChunkX = min.getX() >> 4, maxChunkX = max.getX() >> 4;
+                    int minChunkZ = min.getZ() >> 4, maxChunkZ = max.getZ() >> 4;
                     int chunkCount = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
                     if (chunkCount > 4096) {
                         throw new IllegalArgumentException("Selection covers too many chunks to scan safely (max: 4096)");
                     }
-
                     for (int cx = minChunkX; cx <= maxChunkX; cx++) {
                         for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
                             WorldChunk chunk = world.getChunk(cx, cz);
-                             if (chunk != null) {
-                                for (BlockPos pos : chunk.getBlockEntityPositions()) {
-                                    if (pos.getX() >= min.getX() && pos.getX() <= max.getX() &&
-                                        pos.getY() >= min.getY() && pos.getY() <= max.getY() &&
-                                        pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ()) {
-                                        
-                                        BlockEntity be = chunk.getBlockEntity(pos);
-                                        if (be instanceof StructureBlockBlockEntity structBlock) {
-                                            preloadStructureBoundsChunks(world, pos, structBlock);
-                                            boolean success = structBlock.saveStructure();
-                                            JsonObject item = new JsonObject();
-                                            item.addProperty("x", pos.getX());
-                                            item.addProperty("y", pos.getY());
-                                            item.addProperty("z", pos.getZ());
-                                            
-                                            NbtCompound nbt = structBlock.createNbt(server.getRegistryManager());
-                                            String name = nbt.getString("name").orElse("");
-                                            item.addProperty("name", name);
-                                            
-                                            item.addProperty("success", success);
-                                            savedList.add(item);
-                                        }
-                                    }
-                                }
+                            if (chunk == null) continue;
+                            for (BlockPos pos : chunk.getBlockEntityPositions()) {
+                                if (pos.getX() < min.getX() || pos.getX() > max.getX()) continue;
+                                if (pos.getY() < min.getY() || pos.getY() > max.getY()) continue;
+                                if (pos.getZ() < min.getZ() || pos.getZ() > max.getZ()) continue;
+                                BlockEntity be = chunk.getBlockEntity(pos);
+                                if (!(be instanceof StructureBlockBlockEntity structBlock)) continue;
+                                preloadStructureBoundsChunks(world, pos, structBlock);
+                                Box bounds = structureBoundsBox(world, pos, structBlock);
+                                kickEntityLoad(world, bounds);
+                                String name = structBlock.createNbt(server.getRegistryManager()).getString("name").orElse("");
+                                targets.add(new SaveTarget(pos.toImmutable(), bounds, name));
                             }
                         }
                     }
                 }
+                planFuture.complete(targets);
+            } catch (Exception e) {
+                planFuture.completeExceptionally(e);
+            }
+        });
 
+        Object plan;
+        try {
+            plan = planFuture.get(15, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "plan phase: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()));
+            return GSON.toJson(err);
+        }
+        if (plan instanceof JsonObject errJson) {
+            return GSON.toJson(errJson);
+        }
+        @SuppressWarnings("unchecked")
+        java.util.List<SaveTarget> targets = (java.util.List<SaveTarget>) plan;
+
+        // Wait for the async entity-section load to complete. 50ms is one tick at 20 TPS.
+        // Give it a healthy handful so PersistentEntitySectionManager has time to deserialise
+        // the entity file for every touched chunk.
+        try { Thread.sleep(300); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+
+        // Phase 2 - on the server thread again: run the actual save and record per-target
+        // entity counts so callers can spot a zero that should not be zero.
+        CompletableFuture<JsonObject> saveFuture = new CompletableFuture<>();
+        server.execute(() -> {
+            try {
+                ServerWorld world = server.getOverworld();
+                JsonObject result = new JsonObject();
+                JsonArray savedList = new JsonArray();
+                for (SaveTarget target : targets) {
+                    JsonObject item = new JsonObject();
+                    item.addProperty("x", target.pos.getX());
+                    item.addProperty("y", target.pos.getY());
+                    item.addProperty("z", target.pos.getZ());
+                    item.addProperty("name", target.name);
+
+                    BlockEntity be = world.getBlockEntity(target.pos);
+                    if (!(be instanceof StructureBlockBlockEntity structBlock)) {
+                        item.addProperty("success", false);
+                        item.addProperty("error", "not_a_structure_block");
+                        savedList.add(item);
+                        continue;
+                    }
+
+                    int entityCount = target.bounds == null ? -1 : world.getOtherEntities(null, target.bounds, e -> true).size();
+                    boolean success = structBlock.saveStructure();
+                    item.addProperty("success", success);
+                    item.addProperty("entities_captured", entityCount);
+                    savedList.add(item);
+                }
                 result.addProperty("count", savedList.size());
                 result.add("results", savedList);
-                future.complete(result);
+                saveFuture.complete(result);
             } catch (Exception e) {
-                future.completeExceptionally(e);
+                saveFuture.completeExceptionally(e);
             }
         });
 
         try {
-            return GSON.toJson(future.get(10, TimeUnit.SECONDS));
+            return GSON.toJson(saveFuture.get(15, TimeUnit.SECONDS));
         } catch (Exception e) {
             JsonObject err = new JsonObject();
-            err.addProperty("error", e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+            err.addProperty("error", "save phase: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()));
             return GSON.toJson(err);
         }
     }
