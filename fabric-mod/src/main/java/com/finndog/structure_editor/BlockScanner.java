@@ -240,23 +240,6 @@ public class BlockScanner {
     }
 
     // Triggers the save operation on structure blocks in selection or at coordinates
-    // Force-load every chunk that overlaps the structure's captured volume so vanilla
-    // saveStructure's block iteration sees every intended block. Entity sections are handled
-    // separately by kickEntityLoad below - they don't come along for the ride here.
-    private static void preloadStructureBoundsChunks(ServerWorld world, BlockPos sbPos, StructureBlockBlockEntity structBlock) {
-        Box b = structureBoundsBox(world, sbPos, structBlock);
-        if (b == null) return;
-        int minCx = ((int) Math.floor(b.minX)) >> 4;
-        int maxCx = ((int) Math.floor(b.maxX)) >> 4;
-        int minCz = ((int) Math.floor(b.minZ)) >> 4;
-        int maxCz = ((int) Math.floor(b.maxZ)) >> 4;
-        for (int cx = minCx; cx <= maxCx; cx++) {
-            for (int cz = minCz; cz <= maxCz; cz++) {
-                world.getChunk(cx, cz);
-            }
-        }
-    }
-
     // Returns the AABB the structure's save will iterate for blocks AND entities. Same math
     // vanilla StructureBlockBlockEntity.saveStructure uses (offset -> offset + size). Returns
     // null for LOAD/CORNER/DATA modes where size is zero.
@@ -280,15 +263,20 @@ public class BlockScanner {
         }
     }
 
-    // Kicks an async entity-section load for every chunk covering the box. On 1.17+,
-    // entities live in a separate per-chunk store loaded by PersistentEntitySectionManager
-    // independently of block sections. world.getChunk force-loads block sections but leaves
-    // entity sections cold. Iterating entities via getOtherEntities triggers the async load;
-    // the call itself returns whatever's in-memory right now (may be zero) so we have to
-    // give the load time to complete before actually saving - that gap lives in the caller.
-    private static void kickEntityLoad(ServerWorld world, Box box) {
-        if (box == null) return;
-        world.getOtherEntities(null, box, e -> false);
+    // Enumerate every chunk that overlaps the box.
+    private static java.util.List<net.minecraft.util.math.ChunkPos> chunksIn(Box box) {
+        java.util.List<net.minecraft.util.math.ChunkPos> out = new java.util.ArrayList<>();
+        if (box == null) return out;
+        int minCx = ((int) Math.floor(box.minX)) >> 4;
+        int maxCx = ((int) Math.floor(box.maxX)) >> 4;
+        int minCz = ((int) Math.floor(box.minZ)) >> 4;
+        int maxCz = ((int) Math.floor(box.maxZ)) >> 4;
+        for (int cx = minCx; cx <= maxCx; cx++) {
+            for (int cz = minCz; cz <= maxCz; cz++) {
+                out.add(new net.minecraft.util.math.ChunkPos(cx, cz));
+            }
+        }
+        return out;
     }
 
     // Small holder for the two-phase save (plan on tick T, wait, then save on tick T+N).
@@ -296,14 +284,24 @@ public class BlockScanner {
         final BlockPos pos;
         final Box bounds;
         final String name;
-        SaveTarget(BlockPos pos, Box bounds, String name) { this.pos = pos; this.bounds = bounds; this.name = name; }
+        final java.util.List<net.minecraft.util.math.ChunkPos> ticketChunks;
+        SaveTarget(BlockPos pos, Box bounds, String name, java.util.List<net.minecraft.util.math.ChunkPos> ticketChunks) {
+            this.pos = pos; this.bounds = bounds; this.name = name; this.ticketChunks = ticketChunks;
+        }
     }
 
+    // Ticket radius that has to reach the target chunk. addTicket propagates the ticket level
+    // outward and we need the target chunk itself at ENTITY_TICKING - a radius of 2 is what
+    // vanilla /forceload uses.
+    private static final int SAVE_TICKET_RADIUS = 2;
+
     public static String saveStructures(MinecraftServer server, SelectionManager.Region selection, JsonObject request) {
-        // Phase 1 - on the server thread: enumerate structure blocks in scope, force-load
-        // every chunk overlapping each SB's captured volume for both block sections and
-        // entity sections. See kickEntityLoad's comment for why the entity call is needed
-        // on top of the block-chunk force-load.
+        // Phase 1 - server thread: enumerate structure blocks in scope, compute each SB's
+        // captured AABB and the chunks it overlaps, then add a FORCED chunk-loading ticket
+        // for every one of those chunks. FORCED tickets bring chunks to a level that triggers
+        // the async load of entity sections (PersistentEntitySectionManager reads the entity
+        // file); getChunk alone only loads block sections, which is why previous fixes
+        // produced entity-less saves on cold chunks.
         CompletableFuture<Object> planFuture = new CompletableFuture<>();
         server.execute(() -> {
             try {
@@ -320,11 +318,13 @@ public class BlockScanner {
                         planFuture.complete(err);
                         return;
                     }
-                    preloadStructureBoundsChunks(world, pos, structBlock);
                     Box bounds = structureBoundsBox(world, pos, structBlock);
-                    kickEntityLoad(world, bounds);
+                    java.util.List<net.minecraft.util.math.ChunkPos> ticketChunks = chunksIn(bounds);
+                    for (net.minecraft.util.math.ChunkPos cp : ticketChunks) {
+                        world.getChunkManager().addTicket(net.minecraft.server.world.ChunkTicketType.FORCED, cp, SAVE_TICKET_RADIUS);
+                    }
                     String name = structBlock.createNbt(server.getRegistryManager()).getString("name").orElse("");
-                    targets.add(new SaveTarget(pos, bounds, name));
+                    targets.add(new SaveTarget(pos, bounds, name, ticketChunks));
                 } else {
                     if (!selection.isComplete()) {
                         JsonObject err = new JsonObject();
@@ -350,11 +350,13 @@ public class BlockScanner {
                                 if (pos.getZ() < min.getZ() || pos.getZ() > max.getZ()) continue;
                                 BlockEntity be = chunk.getBlockEntity(pos);
                                 if (!(be instanceof StructureBlockBlockEntity structBlock)) continue;
-                                preloadStructureBoundsChunks(world, pos, structBlock);
                                 Box bounds = structureBoundsBox(world, pos, structBlock);
-                                kickEntityLoad(world, bounds);
+                                java.util.List<net.minecraft.util.math.ChunkPos> ticketChunks = chunksIn(bounds);
+                                for (net.minecraft.util.math.ChunkPos cp : ticketChunks) {
+                                    world.getChunkManager().addTicket(net.minecraft.server.world.ChunkTicketType.FORCED, cp, SAVE_TICKET_RADIUS);
+                                }
                                 String name = structBlock.createNbt(server.getRegistryManager()).getString("name").orElse("");
-                                targets.add(new SaveTarget(pos.toImmutable(), bounds, name));
+                                targets.add(new SaveTarget(pos.toImmutable(), bounds, name, ticketChunks));
                             }
                         }
                     }
@@ -379,13 +381,15 @@ public class BlockScanner {
         @SuppressWarnings("unchecked")
         java.util.List<SaveTarget> targets = (java.util.List<SaveTarget>) plan;
 
-        // Wait for the async entity-section load to complete. 50ms is one tick at 20 TPS.
-        // Give it a healthy handful so PersistentEntitySectionManager has time to deserialise
-        // the entity file for every touched chunk.
-        try { Thread.sleep(300); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+        // Wait for FORCED tickets to propagate through the chunk manager and for
+        // PersistentEntitySectionManager to finish reading the entity file for every touched
+        // chunk. 50ms = one tick at 20 TPS; a full second is plenty for a handful of chunks
+        // and cheap compared to the disk read itself.
+        try { Thread.sleep(1000); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
 
-        // Phase 2 - on the server thread again: run the actual save and record per-target
-        // entity counts so callers can spot a zero that should not be zero.
+        // Phase 2 - server thread: run the actual save and record per-target entity counts so
+        // callers can spot a zero that should not be zero. Also remove the tickets we added
+        // in phase 1 (FORCED has NO_EXPIRATION so we have to release them explicitly).
         CompletableFuture<JsonObject> saveFuture = new CompletableFuture<>();
         server.execute(() -> {
             try {
@@ -403,15 +407,17 @@ public class BlockScanner {
                     if (!(be instanceof StructureBlockBlockEntity structBlock)) {
                         item.addProperty("success", false);
                         item.addProperty("error", "not_a_structure_block");
-                        savedList.add(item);
-                        continue;
+                    } else {
+                        int entityCount = target.bounds == null ? -1 : world.getOtherEntities(null, target.bounds, e -> true).size();
+                        boolean success = structBlock.saveStructure();
+                        item.addProperty("success", success);
+                        item.addProperty("entities_captured", entityCount);
                     }
-
-                    int entityCount = target.bounds == null ? -1 : world.getOtherEntities(null, target.bounds, e -> true).size();
-                    boolean success = structBlock.saveStructure();
-                    item.addProperty("success", success);
-                    item.addProperty("entities_captured", entityCount);
                     savedList.add(item);
+
+                    for (net.minecraft.util.math.ChunkPos cp : target.ticketChunks) {
+                        world.getChunkManager().removeTicket(net.minecraft.server.world.ChunkTicketType.FORCED, cp, SAVE_TICKET_RADIUS);
+                    }
                 }
                 result.addProperty("count", savedList.size());
                 result.add("results", savedList);
