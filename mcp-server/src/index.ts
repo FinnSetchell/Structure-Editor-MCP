@@ -80,7 +80,7 @@ function mergeBoundsIntoBody(body: Record<string, unknown>, pos1?: Pos, pos2?: P
 
 const server = new McpServer({
     name: "structure-editor",
-    version: "1.4.7",
+    version: "1.4.8",
 });
 
 // --- health ---
@@ -927,7 +927,17 @@ Optional 'grep' filters to lines containing the substring (case-insensitive), ap
         const params = new URLSearchParams();
         if (lines !== undefined) params.append("lines", String(lines));
         if (grep) params.append("grep", grep);
-        const data = await modGet("/log/tail" + (params.toString() ? "?" + params.toString() : "")) as any;
+        // Log lines are arbitrary bytes from other mods; if the payload still isn't strict
+        // JSON, hand back the raw text rather than failing the whole call.
+        const headers: Record<string, string> = {};
+        if (API_KEY) headers["Authorization"] = `Bearer ${API_KEY}`;
+        const res = await fetch(`${MOD_URL}/log/tail${params.toString() ? "?" + params.toString() : ""}`, { headers });
+        const raw = await res.text();
+        if (!res.ok) return textResult({ error: `HTTP ${res.status} from mod`, body: raw.slice(0, 2000) });
+        let data: any;
+        try { data = JSON.parse(raw); } catch {
+            return { content: [{ type: "text" as const, text: "(log payload was not strict JSON; raw follows)\n" + raw }] };
+        }
         if (data.error) return textResult(data);
         const header = `${data.file} (${data.total_lines} lines total, showing ${data.returned}${data.grep ? ` matching "${data.grep}"` : ""}):`;
         return { content: [{ type: "text" as const, text: [header, ...data.lines].join("\n") }] };

@@ -1057,16 +1057,20 @@ public class EditorHttpServer {
                     sendJson(exchange, 404, GSON.toJson(errorJson("No logs/latest.log at " + log)));
                     return;
                 }
-                java.util.List<String> all = java.nio.file.Files.readAllLines(log, StandardCharsets.UTF_8);
+                // Lenient decode: a hosted JVM may write the log in a non-UTF-8 default charset
+                // (readAllLines would throw on the first bad byte). Also strip C0 control chars
+                // other than tab so the JSON is parseable by strict clients.
+                String text = new String(java.nio.file.Files.readAllBytes(log), StandardCharsets.UTF_8);
+                String[] all = text.split("\r?\n");
                 java.util.List<String> picked = new java.util.ArrayList<>();
-                for(int i = all.size() - 1; i >= 0 && picked.size() < lines; i--) {
-                    String l = all.get(i);
+                for(int i = all.length - 1; i >= 0 && picked.size() < lines; i--) {
+                    String l = all[i].replaceAll("[\\p{Cntrl}&&[^\\t]]", "");
                     if(grepLower == null || l.toLowerCase(java.util.Locale.ROOT).contains(grepLower)) picked.add(l);
                 }
                 java.util.Collections.reverse(picked);
                 JsonObject out = new JsonObject();
                 out.addProperty("file", log.toString());
-                out.addProperty("total_lines", all.size());
+                out.addProperty("total_lines", all.length);
                 out.addProperty("returned", picked.size());
                 if(grep != null) out.addProperty("grep", grep);
                 JsonArray arr = new JsonArray();
