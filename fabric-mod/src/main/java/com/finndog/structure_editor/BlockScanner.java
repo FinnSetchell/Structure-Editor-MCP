@@ -421,11 +421,7 @@ public class BlockScanner {
                     ServerEntityManagerInvoker em = (ServerEntityManagerInvoker) ((ServerWorldAccessor) world).structureEditor$getEntityManager();
                     java.util.Set<Long> loaded = new java.util.HashSet<>();
                     for (long cp : toCheck) {
-                        if (em.structureEditor$isLoaded(cp)) {
-                            loaded.add(cp);
-                        } else {
-                            em.structureEditor$readIfFresh(cp);
-                        }
+                        if (entitySectionsReady(em, cp)) loaded.add(cp);
                     }
                     pollFuture.complete(loaded);
                 } catch (Exception e) {
@@ -1134,20 +1130,123 @@ public class BlockScanner {
         }
     }
 
+    // A chunk's entities are usable only when the entity-file read has landed (LOADED) AND
+    // the chunk map has raised the chunk's visibility, because sections created before that
+    // are HIDDEN and getOtherEntities skips them. Never request the read ourselves: doing so
+    // ahead of the visibility update is exactly what produced loaded-but-invisible entities.
+    // Vanilla's updateChunkStatus requests the read itself once the ticket lands.
+    private static boolean entitySectionsReady(ServerEntityManagerInvoker em, long chunkKey) {
+        if (!em.structureEditor$isLoaded(chunkKey)) return false;
+        Object vis = em.structureEditor$getTrackingStatuses().get(chunkKey);
+        return vis != null && vis != net.minecraft.world.entity.EntityTrackingStatus.HIDDEN;
+    }
+
+    // Result of waiting for entity sections to become resident for a set of chunks.
+    private static final class EntityLoadWait {
+        final boolean allLoaded;
+        final long waitMs;
+        final int pending;
+        EntityLoadWait(boolean allLoaded, long waitMs, int pending) { this.allLoaded = allLoaded; this.waitMs = waitMs; this.pending = pending; }
+    }
+
+    // Must be called from the http thread (it blocks). For every chunk key, hop to the server
+    // thread and check the entity manager's isLoaded; any chunk not yet loaded gets
+    // readIfFresh, which schedules the entity-file read only while the section is FRESH.
+    // Bounded by timeoutMs. Same sequence save_structures uses.
+    private static EntityLoadWait awaitEntitySections(MinecraftServer server, java.util.Set<Long> chunkKeys, long timeoutMs) {
+        long start = System.currentTimeMillis();
+        long deadline = start + timeoutMs;
+        java.util.Set<Long> pending = new java.util.HashSet<>(chunkKeys);
+        while (!pending.isEmpty() && System.currentTimeMillis() < deadline) {
+            final java.util.Set<Long> toCheck = new java.util.HashSet<>(pending);
+            CompletableFuture<java.util.Set<Long>> poll = new CompletableFuture<>();
+            server.execute(() -> {
+                try {
+                    ServerWorld world = server.getOverworld();
+                    ServerEntityManagerInvoker em = (ServerEntityManagerInvoker) ((ServerWorldAccessor) world).structureEditor$getEntityManager();
+                    java.util.Set<Long> loaded = new java.util.HashSet<>();
+                    for (long cp : toCheck) {
+                        if (entitySectionsReady(em, cp)) loaded.add(cp);
+                    }
+                    poll.complete(loaded);
+                } catch (Exception e) {
+                    poll.completeExceptionally(e);
+                }
+            });
+            try {
+                pending.removeAll(poll.get(2, TimeUnit.SECONDS));
+            } catch (Exception e) {
+                StructureEditorMod.LOGGER.warn("entity-load poll failed: {}", e.toString());
+                break;
+            }
+            if (!pending.isEmpty()) {
+                try { Thread.sleep(50); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+            }
+        }
+        return new EntityLoadWait(pending.isEmpty(), System.currentTimeMillis() - start, pending.size());
+    }
+
+    private static void releaseTickets(MinecraftServer server, java.util.List<net.minecraft.util.math.ChunkPos> chunks) {
+        ServerWorld world = server.getOverworld();
+        for (net.minecraft.util.math.ChunkPos cp : chunks) {
+            try {
+                world.getChunkManager().removeTicket(net.minecraft.server.world.ChunkTicketType.FORCED, cp, SAVE_TICKET_RADIUS);
+            } catch (Exception e) {
+                StructureEditorMod.LOGGER.warn("failed to release ticket at {}: {}", cp, e.toString());
+            }
+        }
+    }
+
     public static String scanEntities(MinecraftServer server, SelectionManager.Region selection, JsonArray targetEntities) {
         if(!selection.isComplete()) {
             JsonObject err = new JsonObject();
             err.addProperty("error", "No complete selection.");
             return GSON.toJson(err);
         }
-        
+
+        BlockPos min = selection.getMin();
+        BlockPos max = selection.getMax();
+        Box box = new Box(min.getX(), min.getY(), min.getZ(), max.getX() + 1.0, max.getY() + 1.0, max.getZ() + 1.0);
+
+        // getOtherEntities only reports entity sections already resident. A cold area reads as
+        // empty even when it is full of armour stands and mobs, so ticket every chunk in the box
+        // and wait for the entity manager to actually load them, exactly like save_structures.
+        final java.util.List<net.minecraft.util.math.ChunkPos> chunks = chunksIn(box);
+        if (chunks.size() > 4096) {
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "Selection covers " + chunks.size() + " chunks, exceeding the safety limit of 4096 chunks (~1024x1024 blocks). Please make a smaller selection.");
+            return GSON.toJson(err);
+        }
+        CompletableFuture<Void> ticketed = new CompletableFuture<>();
+        server.execute(() -> {
+            try {
+                ServerWorld world = server.getOverworld();
+                for (net.minecraft.util.math.ChunkPos cp : chunks) {
+                    world.getChunkManager().addTicket(net.minecraft.server.world.ChunkTicketType.FORCED, cp, SAVE_TICKET_RADIUS);
+                }
+                ticketed.complete(null);
+            } catch (Exception e) {
+                ticketed.completeExceptionally(e);
+            }
+        });
+        try {
+            ticketed.get(10, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            server.execute(() -> releaseTickets(server, chunks));
+            JsonObject err = new JsonObject();
+            err.addProperty("error", "ticket phase: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()));
+            return GSON.toJson(err);
+        }
+        java.util.Set<Long> keys = new java.util.LinkedHashSet<>();
+        for (net.minecraft.util.math.ChunkPos cp : chunks) keys.add(cp.toLong());
+        final EntityLoadWait wait = awaitEntitySections(server, keys, 8000);
+        if (!wait.allLoaded) {
+            StructureEditorMod.LOGGER.warn("scan_entities: {} of {} chunks never reported entity sections loaded after {}ms", wait.pending, chunks.size(), wait.waitMs);
+        }
+
         CompletableFuture<JsonObject> future = new CompletableFuture<>();
         server.execute(() -> {
             try {
-                BlockPos min = selection.getMin();
-                BlockPos max = selection.getMax();
-                Box box = new Box(min.getX(), min.getY(), min.getZ(), max.getX() + 1.0, max.getY() + 1.0, max.getZ() + 1.0);
-                
                 Set<EntityType<?>> targets = new HashSet<>();
                 if (targetEntities != null && !targetEntities.isEmpty()) {
                     for (JsonElement e : targetEntities) {
@@ -1183,10 +1282,16 @@ public class BlockScanner {
                 JsonObject wrapper = new JsonObject();
                 wrapper.addProperty("count", results.size());
                 if (results.size() >= 1000) wrapper.addProperty("warning", "Result limit of 1000 reached.");
+                wrapper.addProperty("chunks", chunks.size());
+                wrapper.addProperty("entity_sections_loaded", wait.allLoaded);
+                wrapper.addProperty("entity_wait_ms", wait.waitMs);
+                if (!wait.allLoaded) wrapper.addProperty("warning_entities", wait.pending + " chunk(s) never finished loading entity sections; results may be incomplete.");
                 wrapper.add("entities", results);
                 future.complete(wrapper);
             } catch(Exception e) {
                 future.completeExceptionally(e);
+            } finally {
+                releaseTickets(server, chunks);
             }
         });
 

@@ -80,7 +80,7 @@ function mergeBoundsIntoBody(body: Record<string, unknown>, pos1?: Pos, pos2?: P
 
 const server = new McpServer({
     name: "structure-editor",
-    version: "1.4.8",
+    version: "1.4.9",
 });
 
 // --- health ---
@@ -643,6 +643,7 @@ Bounds are picked in this order: inline pos1+pos2 (stateless), else the named st
 server.tool(
     "scan_entities",
     `Scan a bounded region for specific entities. Returns their coordinates and basic info.
+Force-loads every chunk in the bounds and waits for their entity sections to become resident before reading, so it sees entities in cold/unloaded chunks too (armour stands, item frames, named mobs). The response includes entity_sections_loaded and entity_wait_ms; a warning_entities field means some chunks never finished loading and results may be incomplete.
 Bounds are picked in this order: inline pos1+pos2 (stateless), else the named stored region, else 'default'.`,
     {
         entities: z.array(z.string()).optional().describe("Array of entity IDs to search for, e.g. ['minecraft:zombie']. Omit or pass empty array to return all entities."),
