@@ -1,115 +1,63 @@
 package com.finndog.structure_editor.client;
 
 import com.finndog.structure_editor.network.SyncSelectionsPayload;
-import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
-import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
-import net.minecraft.client.renderer.RenderType;
-import com.mojang.blaze3d.vertex.VertexConsumer;
-import net.minecraft.client.renderer.MultiBufferSource;
-import com.mojang.blaze3d.vertex.PoseStack;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
-import net.minecraft.world.phys.Vec3;
-import org.joml.Matrix4f;
-import org.joml.Matrix3f;
+import net.minecraft.gizmos.GizmoStyle;
+import net.minecraft.gizmos.Gizmos;
+import net.minecraft.world.phys.AABB;
 
 import java.util.Map;
 
+// 26.2 reworked the render backend: WorldRenderEvents, MultiBufferSource and the
+// hand-built line vertices this used to draw are all gone. Vanilla now has a gizmo
+// system for exactly this kind of overlay, so the selection boxes are submitted as
+// CuboidGizmos once per client tick instead of drawn manually. Per-tick gizmos are
+// cleared every tick, so re-adding each tick is what keeps them on screen.
 public class SelectionRenderer {
 
+    // ARGB. Active region is the one bound to the wand in hand.
+    private static final int ACTIVE_COLOUR = 0xFFFFFF00;
+    private static final int INACTIVE_COLOUR = 0x80969696;
+
     public static void register() {
-        WorldRenderEvents.BEFORE_DEBUG_RENDER.register(SelectionRenderer::render);
+        ClientTickEvents.END_CLIENT_TICK.register(SelectionRenderer::tick);
     }
 
-    private static void render(WorldRenderContext context) {
+    private static void tick(Minecraft client) {
         Map<String, SyncSelectionsPayload.RegionData> regions = StructureEditorClient.getClientRegions();
         if (regions == null || regions.isEmpty()) return;
+        if (client.level == null) return;
 
-        MultiBufferSource consumers = context.consumers();
-        if (consumers == null) return;
-
-        PoseStack poseStack = context.matrices();
-        if (poseStack == null) return;
-
-        Vec3 camPos = net.minecraft.client.Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
-
-        poseStack.pushPose();
-        poseStack.translate(-camPos.x, -camPos.y, -camPos.z);
-
-        VertexConsumer lines = consumers.getBuffer(RenderType.lines());
-        
-        net.minecraft.client.player.LocalPlayer player = net.minecraft.client.Minecraft.getInstance().player;
         String active = "default";
-        if (player != null) {
-            active = com.finndog.structure_editor.StructureEditorMod.getWandRegion(player.getMainHandItem()).orElse("default");
+        if (client.player != null) {
+            active = com.finndog.structure_editor.StructureEditorMod
+                    .getWandRegion(client.player.getMainHandItem())
+                    .orElse("default");
         }
 
-        for (Map.Entry<String, SyncSelectionsPayload.RegionData> entry : regions.entrySet()) {
-            SyncSelectionsPayload.RegionData data = entry.getValue();
-            boolean isActive = entry.getKey().equals(active);
-            
-            int r = isActive ? 255 : 150;
-            int g = isActive ? 255 : 150;
-            int b = isActive ? 0 : 150;
-            int a = isActive ? 255 : 128;
-
-            BlockPos p1 = data.pos1().orElse(null);
-            BlockPos p2 = data.pos2().orElse(null);
-
-            if (p1 != null && p2 == null) {
-                drawBox(poseStack, lines, p1.getX(), p1.getY(), p1.getZ(), p1.getX() + 1, p1.getY() + 1, p1.getZ() + 1, r, g, b, a);
-            } else if (p2 != null && p1 == null) {
-                drawBox(poseStack, lines, p2.getX(), p2.getY(), p2.getZ(), p2.getX() + 1, p2.getY() + 1, p2.getZ() + 1, r, g, b, a);
-            } else if (p1 != null && p2 != null) {
-                int minX = Math.min(p1.getX(), p2.getX());
-                int minY = Math.min(p1.getY(), p2.getY());
-                int minZ = Math.min(p1.getZ(), p2.getZ());
-                int maxX = Math.max(p1.getX(), p2.getX()) + 1;
-                int maxY = Math.max(p1.getY(), p2.getY()) + 1;
-                int maxZ = Math.max(p1.getZ(), p2.getZ()) + 1;
-                drawBox(poseStack, lines, minX, minY, minZ, maxX, maxY, maxZ, r, g, b, a);
+        try (Gizmos.TemporaryCollection collection = client.collectPerTickGizmos()) {
+            for (Map.Entry<String, SyncSelectionsPayload.RegionData> entry : regions.entrySet()) {
+                AABB box = boxFor(entry.getValue());
+                if (box == null) continue;
+                boolean isActive = entry.getKey().equals(active);
+                Gizmos.cuboid(box, GizmoStyle.stroke(isActive ? ACTIVE_COLOUR : INACTIVE_COLOUR));
             }
         }
-
-        poseStack.popPose();
     }
 
-    private static void drawBox(PoseStack poseStack, VertexConsumer consumer,
-                                double x1, double y1, double z1,
-                                double x2, double y2, double z2,
-                                int r, int g, int b, int a) {
-        PoseStack.Pose pose = poseStack.last();
-
-        line(consumer, pose, x1,y1,z1, x2,y1,z1, r,g,b,a);
-        line(consumer, pose, x2,y1,z1, x2,y1,z2, r,g,b,a);
-        line(consumer, pose, x2,y1,z2, x1,y1,z2, r,g,b,a);
-        line(consumer, pose, x1,y1,z2, x1,y1,z1, r,g,b,a);
-        line(consumer, pose, x1,y2,z1, x2,y2,z1, r,g,b,a);
-        line(consumer, pose, x2,y2,z1, x2,y2,z2, r,g,b,a);
-        line(consumer, pose, x2,y2,z2, x1,y2,z2, r,g,b,a);
-        line(consumer, pose, x1,y2,z2, x1,y2,z1, r,g,b,a);
-        line(consumer, pose, x1,y1,z1, x1,y2,z1, r,g,b,a);
-        line(consumer, pose, x2,y1,z1, x2,y2,z1, r,g,b,a);
-        line(consumer, pose, x2,y1,z2, x2,y2,z2, r,g,b,a);
-        line(consumer, pose, x1,y1,z2, x1,y2,z2, r,g,b,a);
-    }
-
-    private static void line(VertexConsumer consumer, PoseStack.Pose pose,
-                             double x1, double y1, double z1, double x2, double y2, double z2,
-                             int r, int g, int b, int a) {
-        float dx = (float)(x2 - x1);
-        float dy = (float)(y2 - y1);
-        float dz = (float)(z2 - z1);
-        float len = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
-        if (len == 0) return;
-
-        Matrix4f mat = pose.pose();
-        Matrix3f nmat = pose.normal();
-        
-        consumer.addVertex(mat, (float) x1, (float) y1, (float) z1)
-                .setColor(r, g, b, a)
-                .setNormal(pose, dx / len, dy / len, dz / len);
-        consumer.addVertex(mat, (float) x2, (float) y2, (float) z2)
-                .setColor(r, g, b, a)
-                .setNormal(pose, dx / len, dy / len, dz / len);
+    // A half-set selection still shows: the single placed corner is drawn as its own
+    // block-sized box so the wand gives feedback after the first click.
+    private static AABB boxFor(SyncSelectionsPayload.RegionData data) {
+        BlockPos p1 = data.pos1().orElse(null);
+        BlockPos p2 = data.pos2().orElse(null);
+        if (p1 == null && p2 == null) return null;
+        if (p1 == null) p1 = p2;
+        if (p2 == null) p2 = p1;
+        return new AABB(
+                Math.min(p1.getX(), p2.getX()), Math.min(p1.getY(), p2.getY()), Math.min(p1.getZ(), p2.getZ()),
+                Math.max(p1.getX(), p2.getX()) + 1.0, Math.max(p1.getY(), p2.getY()) + 1.0, Math.max(p1.getZ(), p2.getZ()) + 1.0
+        );
     }
 }

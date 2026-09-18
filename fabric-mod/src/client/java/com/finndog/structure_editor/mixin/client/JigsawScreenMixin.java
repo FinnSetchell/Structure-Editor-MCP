@@ -3,7 +3,6 @@ package com.finndog.structure_editor.mixin.client;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.JigsawBlockEntity;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.inventory.JigsawBlockEditScreen;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
@@ -23,13 +22,13 @@ public class JigsawScreenMixin {
         this.se_cachedName = this.jigsawEntity.getName().toString();
     }
 
-    @Inject(method = "render", at = @At("HEAD"))
-    private void onRender(GuiGraphics context, int mouseX, int mouseY, float delta, CallbackInfo ci) {
+    @Inject(method = "tick", at = @At("TAIL"))
+    private void onTick(CallbackInfo ci) {
         Minecraft client = Minecraft.getInstance();
         if (client.level != null) {
             BlockEntity current = client.level.getBlockEntity(this.jigsawEntity.getBlockPos());
             if (current != this.jigsawEntity || !this.jigsawEntity.getName().toString().equals(this.se_cachedName)) {
-                client.setScreen(null);
+                client.setScreenAndShow(null);
                 if (client.player != null) {
                     client.player.sendOverlayMessage(net.minecraft.network.chat.Component.literal("§cClosed GUI: Block edited externally."));
                 }
