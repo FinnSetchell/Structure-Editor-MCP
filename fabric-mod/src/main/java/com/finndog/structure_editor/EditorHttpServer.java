@@ -482,7 +482,14 @@ public class EditorHttpServer {
                 }
 
                 java.nio.file.Path generatedDir = mcServer.getWorldPath(net.minecraft.world.level.storage.LevelResource.GENERATED_DIR);
-                java.nio.file.Path file = generatedDir.resolve(namespace).resolve("structures").resolve(path + ".nbt");
+                // The datapack folder went singular ("structure") with the 1.21 layout change and
+                // that is what the game writes on 26.3; older worlds still have the plural form,
+                // so try the current name first and fall back rather than 404ing on either.
+                java.nio.file.Path file = generatedDir.resolve(namespace).resolve("structure").resolve(path + ".nbt");
+                if(!java.nio.file.Files.isRegularFile(file)) {
+                    java.nio.file.Path legacy = generatedDir.resolve(namespace).resolve("structures").resolve(path + ".nbt");
+                    if(java.nio.file.Files.isRegularFile(legacy)) file = legacy;
+                }
 
                 if(!java.nio.file.Files.exists(file) || java.nio.file.Files.isDirectory(file)) {
                     JsonObject err = new JsonObject();
