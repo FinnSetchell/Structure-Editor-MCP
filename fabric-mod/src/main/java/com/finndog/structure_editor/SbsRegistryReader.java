@@ -7,7 +7,7 @@ import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
@@ -28,9 +28,9 @@ public class SbsRegistryReader {
         public final BlockPos pos;
         public final String name;
         public final String mode;
-        public final ResourceLocation dimension;
+        public final Identifier dimension;
 
-        public Entry(BlockPos pos, String name, String mode, ResourceLocation dimension) {
+        public Entry(BlockPos pos, String name, String mode, Identifier dimension) {
             this.pos = pos;
             this.name = name;
             this.mode = mode;
@@ -58,7 +58,7 @@ public class SbsRegistryReader {
         if (dim.equals(Level.OVERWORLD)) return root.resolve("data");
         if (dim.equals(Level.NETHER))    return root.resolve("DIM-1").resolve("data");
         if (dim.equals(Level.END))       return root.resolve("DIM1").resolve("data");
-        ResourceLocation id = dim.location();
+        Identifier id = dim.identifier();
         return root.resolve("dimensions").resolve(id.getNamespace()).resolve(id.getPath()).resolve("data");
     }
 
@@ -79,7 +79,7 @@ public class SbsRegistryReader {
         ListTag list = data.getList("structures").orElse(null);
         if (list == null) return Result.of(List.of());
 
-        ResourceLocation dimId = dim.location();
+        Identifier dimId = dim.identifier();
         List<Entry> out = new ArrayList<>(list.size());
         for (int i = 0; i < list.size(); i++) {
             CompoundTag entry = list.getCompound(i).orElse(null);

@@ -4,7 +4,7 @@ import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import net.minecraft.core.BlockPos;
 import java.util.HashMap;
 import java.util.Map;
@@ -12,7 +12,7 @@ import java.util.Optional;
 
 public record SyncSelectionsPayload(Map<String, RegionData> regions) implements CustomPacketPayload {
 
-    public static final CustomPacketPayload.Type<SyncSelectionsPayload> ID = new CustomPacketPayload.Type<>(ResourceLocation.fromNamespaceAndPath("structure_editor", "sync_selections"));
+    public static final CustomPacketPayload.Type<SyncSelectionsPayload> ID = new CustomPacketPayload.Type<>(Identifier.fromNamespaceAndPath("structure_editor", "sync_selections"));
 
     public record RegionData(Optional<BlockPos> pos1, Optional<BlockPos> pos2) {}
 

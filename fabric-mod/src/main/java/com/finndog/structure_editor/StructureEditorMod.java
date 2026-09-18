@@ -47,7 +47,7 @@ public class StructureEditorMod implements ModInitializer {
         httpServer = new EditorHttpServer(config);
         httpServer.start();
 
-        PayloadTypeRegistry.playS2C().register(SyncSelectionsPayload.ID, SyncSelectionsPayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(SyncSelectionsPayload.ID, SyncSelectionsPayload.CODEC);
 
         net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STARTED.register(s -> mcServer = s);
         net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STOPPING.register(s -> mcServer = null);
@@ -156,7 +156,7 @@ public class StructureEditorMod implements ModInitializer {
         wand.set(DataComponents.CUSTOM_DATA, net.minecraft.world.item.component.CustomData.of(nbt));
         
         player.getInventory().add(wand);
-        player.displayClientMessage(Component.literal("§7[StructureEditor]§f Wand for region '"+regionName+"' added. Left-click=pos1, Right-click=pos2"), false);
+        player.sendSystemMessage(Component.literal("§7[StructureEditor]§f Wand for region '"+regionName+"' added. Left-click=pos1, Right-click=pos2"));
         return 1;
     }
 
@@ -188,7 +188,7 @@ public class StructureEditorMod implements ModInitializer {
 
             sel.setPos2(active, pos);
             syncSelectionsToAll();
-            sp.displayClientMessage(Component.literal("§7[StructureEditor]§f ["+active+"] pos2 set: " + pos.toShortString()), true);
+            sp.sendOverlayMessage(Component.literal("§7[StructureEditor]§f ["+active+"] pos2 set: " + pos.toShortString()));
             return InteractionResult.SUCCESS;
         });
 
@@ -206,7 +206,7 @@ public class StructureEditorMod implements ModInitializer {
 
             sel.setPos1(active, pos);
             syncSelectionsToAll();
-            sp.displayClientMessage(Component.literal("§7[StructureEditor]§f ["+active+"] pos1 set: " + pos.toShortString()), true);
+            sp.sendOverlayMessage(Component.literal("§7[StructureEditor]§f ["+active+"] pos1 set: " + pos.toShortString()));
             return InteractionResult.SUCCESS;
         });
     }

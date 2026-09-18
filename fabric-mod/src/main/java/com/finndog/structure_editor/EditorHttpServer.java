@@ -12,7 +12,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.network.chat.Component;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
 
@@ -162,7 +162,7 @@ public class EditorHttpServer {
             mcServer.execute(() -> {
                 Component text = Component.literal("§7[Editor] §f" + message);
                 mcServer.getPlayerList().getPlayers().forEach(player -> {
-                    player.displayClientMessage(text, true);
+                    player.sendOverlayMessage(text);
                 });
             });
         }
@@ -825,7 +825,7 @@ public class EditorHttpServer {
             case "nether": case "the_nether": case "minecraft:the_nether": return Level.NETHER;
             case "end": case "the_end": case "minecraft:the_end": return Level.END;
         }
-        ResourceLocation id = ResourceLocation.tryParse(s);
+        Identifier id = Identifier.tryParse(s);
         if(id == null) return null;
         return ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION, id);
     }
@@ -868,7 +868,7 @@ public class EditorHttpServer {
             if(!r.present) {
                 JsonObject err = new JsonObject();
                 err.addProperty("error", "sbs_tracker_missing");
-                err.addProperty("dim", dim.location().toString());
+                err.addProperty("dim", dim.identifier().toString());
                 err.addProperty("hint", "Install StructureBlockSaver on this world, or load a structure block once to seed its tracker.");
                 sendJson(exchange, 404, GSON.toJson(err));
                 return;
@@ -893,7 +893,7 @@ public class EditorHttpServer {
             out.addProperty("count", count);
             out.addProperty("total", r.entries.size());
             out.addProperty("source", "sbs");
-            out.addProperty("dim", dim.location().toString());
+            out.addProperty("dim", dim.identifier().toString());
             out.add("blocks", blocks);
             sendJson(exchange, 200, GSON.toJson(out));
         }
@@ -937,7 +937,7 @@ public class EditorHttpServer {
         if(!r.present) {
             JsonObject err = new JsonObject();
             err.addProperty("error", "sbs_tracker_missing");
-            err.addProperty("dim", dim.location().toString());
+            err.addProperty("dim", dim.identifier().toString());
             return err;
         }
         java.util.List<SbsRegistryReader.Entry> matches = new java.util.ArrayList<>();
@@ -947,7 +947,7 @@ public class EditorHttpServer {
         if(matches.isEmpty()) {
             JsonObject err = new JsonObject();
             err.addProperty("error", "not_found");
-            err.addProperty("message", "No structure block with name '" + name + "' in dim " + dim.location());
+            err.addProperty("message", "No structure block with name '" + name + "' in dim " + dim.identifier());
             return err;
         }
         if(matches.size() > 1) {
@@ -969,7 +969,7 @@ public class EditorHttpServer {
         if(world == null) {
             JsonObject err = new JsonObject();
             err.addProperty("error", "no_world");
-            err.addProperty("message", "Server has no loaded world for dim " + dim.location());
+            err.addProperty("message", "Server has no loaded world for dim " + dim.identifier());
             return err;
         }
         final BlockPos entryPos = entry.pos;
@@ -1018,7 +1018,7 @@ public class EditorHttpServer {
         ok.addProperty("success", true);
         ok.addProperty("name", name);
         ok.addProperty("mode", nbt.getString("mode").orElse(entry.mode));
-        ok.addProperty("dim", dim.location().toString());
+        ok.addProperty("dim", dim.identifier().toString());
         JsonObject sbJ = new JsonObject();
         sbJ.addProperty("x", sbPos.getX()); sbJ.addProperty("y", sbPos.getY()); sbJ.addProperty("z", sbPos.getZ());
         ok.add("structure_block", sbJ);
@@ -1109,7 +1109,7 @@ public class EditorHttpServer {
                 try {
                     ServerLevel world = mcServer.overworld();
                     net.minecraft.world.level.ChunkPos cp = new net.minecraft.world.level.ChunkPos(cx, cz);
-                    long key = cp.toLong();
+                    long key = cp.pack();
                     com.finndog.structure_editor.mixin.ServerEntityManagerInvoker em =
                         (com.finndog.structure_editor.mixin.ServerEntityManagerInvoker)
                         ((com.finndog.structure_editor.mixin.ServerWorldAccessor) world).structureEditor$getEntityManager();

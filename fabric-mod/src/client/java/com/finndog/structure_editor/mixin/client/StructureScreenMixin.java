@@ -31,7 +31,7 @@ public class StructureScreenMixin {
             if (current != this.structure || !this.structure.getStructureName().equals(this.se_cachedName)) {
                 client.setScreen(null);
                 if (client.player != null) {
-                    client.player.displayClientMessage(net.minecraft.network.chat.Component.literal("§cClosed GUI: Block edited externally."), true);
+                    client.player.sendOverlayMessage(net.minecraft.network.chat.Component.literal("§cClosed GUI: Block edited externally."));
                 }
             }
         }

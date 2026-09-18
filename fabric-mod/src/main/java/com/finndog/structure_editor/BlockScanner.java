@@ -18,7 +18,7 @@ import net.minecraft.core.registries.Registries;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.storage.loot.LootTable;
 import net.minecraft.nbt.Tag;
@@ -407,7 +407,7 @@ public class BlockScanner {
         // schedules the read only when the section is still FRESH (no-op otherwise, so it can
         // never duplicate entities).
         java.util.Set<Long> neededChunks = new java.util.LinkedHashSet<>();
-        for (SaveTarget t : targets) for (net.minecraft.world.level.ChunkPos cp : t.ticketChunks) neededChunks.add(cp.toLong());
+        for (SaveTarget t : targets) for (net.minecraft.world.level.ChunkPos cp : t.ticketChunks) neededChunks.add(cp.pack());
 
         long waitStart = System.currentTimeMillis();
         final long waitDeadline = waitStart + 8000;
@@ -450,10 +450,10 @@ public class BlockScanner {
                     ServerEntityManagerInvoker em = (ServerEntityManagerInvoker) ((ServerWorldAccessor) world).structureEditor$getEntityManager();
                     StringBuilder sb = new StringBuilder();
                     for (long key : stuck) {
-                        net.minecraft.world.level.ChunkPos cp = new net.minecraft.world.level.ChunkPos(key);
+                        net.minecraft.world.level.ChunkPos cp = net.minecraft.world.level.ChunkPos.unpack(key);
                         Object load = em.structureEditor$getManagedStatuses().get(key);
                         Object vis = em.structureEditor$getTrackingStatuses().get(key);
-                        sb.append('[').append(cp.x).append(',').append(cp.z).append(" load=")
+                        sb.append('[').append(cp.x()).append(',').append(cp.z()).append(" load=")
                           .append(load == null ? "FRESH" : load).append(" vis=")
                           .append(vis == null ? "ABSENT" : vis).append(" blockTicking=")
                           .append(world.getChunkSource().isPositionTicking(key)).append("] ");
@@ -497,7 +497,7 @@ public class BlockScanner {
                         int chunksTickingReady = 0;
                         JsonArray chunkStates = new JsonArray();
                         for (net.minecraft.world.level.ChunkPos cp : target.ticketChunks) {
-                            long key = cp.toLong();
+                            long key = cp.pack();
                             boolean loaded = em.structureEditor$isLoaded(key);
                             boolean ticking = world.getChunkSource().isPositionTicking(key);
                             if (loaded) chunksEntitiesLoaded++;
@@ -505,8 +505,8 @@ public class BlockScanner {
                             Object load = em.structureEditor$getManagedStatuses().get(key);
                             Object vis = em.structureEditor$getTrackingStatuses().get(key);
                             JsonObject cs = new JsonObject();
-                            cs.addProperty("cx", cp.x);
-                            cs.addProperty("cz", cp.z);
+                            cs.addProperty("cx", cp.x());
+                            cs.addProperty("cz", cp.z());
                             cs.addProperty("entity_load", load == null ? "FRESH" : load.toString());
                             cs.addProperty("entity_visibility", vis == null ? "ABSENT" : vis.toString());
                             cs.addProperty("block_ticking", ticking);
@@ -737,10 +737,10 @@ public class BlockScanner {
 
                 // Read loot table if present
                 if(lootable != null && lootable.getLootTable() != null) {
-                    result.addProperty("loot_table", lootable.getLootTable().location().toString());
+                    result.addProperty("loot_table", lootable.getLootTable().identifier().toString());
                     result.addProperty("loot_table_seed", lootable.getLootTableSeed());
                 } else if (entityLootable instanceof net.minecraft.world.entity.vehicle.ContainerEntity vi && vi.getContainerLootTable() != null) {
-                    result.addProperty("loot_table", vi.getContainerLootTable().location().toString());
+                    result.addProperty("loot_table", vi.getContainerLootTable().identifier().toString());
                     result.addProperty("loot_table_seed", vi.getContainerLootTableSeed());
                 } else {
                     result.add("loot_table", JsonNull.INSTANCE);
@@ -866,7 +866,7 @@ public class BlockScanner {
                     }
                     String lootTableId = request.get("loot_table").getAsString();
                     long seed = request.has("loot_table_seed") ? request.get("loot_table_seed").getAsLong() : 0L;
-                    ResourceKey<LootTable> lootKey = ResourceKey.create(Registries.LOOT_TABLE, ResourceLocation.parse(lootTableId));
+                    ResourceKey<LootTable> lootKey = ResourceKey.create(Registries.LOOT_TABLE, Identifier.parse(lootTableId));
                     if (blockLootable != null) blockLootable.setLootTable(lootKey, seed);
                     else if (entityLootable != null) entityLootable.setLootTable(lootKey, seed);
                     inv.setChanged();
@@ -1089,7 +1089,7 @@ public class BlockScanner {
                 Set<Block> targets = new HashSet<>();
                 for (JsonElement e : targetBlocks) {
                     if (e.isJsonPrimitive()) {
-                        ResourceLocation id = ResourceLocation.tryParse(e.getAsString());
+                        Identifier id = Identifier.tryParse(e.getAsString());
                         if (id != null && BuiltInRegistries.BLOCK.containsKey(id)) {
                             targets.add(BuiltInRegistries.BLOCK.getValue(id));
                         }
@@ -1238,7 +1238,7 @@ public class BlockScanner {
             return GSON.toJson(err);
         }
         java.util.Set<Long> keys = new java.util.LinkedHashSet<>();
-        for (net.minecraft.world.level.ChunkPos cp : chunks) keys.add(cp.toLong());
+        for (net.minecraft.world.level.ChunkPos cp : chunks) keys.add(cp.pack());
         final EntityLoadWait wait = awaitEntitySections(server, keys, 8000);
         if (!wait.allLoaded) {
             StructureEditorMod.LOGGER.warn("scan_entities: {} of {} chunks never reported entity sections loaded after {}ms", wait.pending, chunks.size(), wait.waitMs);
@@ -1251,7 +1251,7 @@ public class BlockScanner {
                 if (targetEntities != null && !targetEntities.isEmpty()) {
                     for (JsonElement e : targetEntities) {
                         if (e.isJsonPrimitive()) {
-                            ResourceLocation id = ResourceLocation.tryParse(e.getAsString());
+                            Identifier id = Identifier.tryParse(e.getAsString());
                             if (id != null && BuiltInRegistries.ENTITY_TYPE.containsKey(id)) {
                                 targets.add(BuiltInRegistries.ENTITY_TYPE.getValue(id));
                             }
@@ -1308,12 +1308,12 @@ public class BlockScanner {
         CompletableFuture<JsonObject> future = new CompletableFuture<>();
         server.execute(() -> {
             try {
-                ResourceLocation id = ResourceLocation.tryParse(structureName);
+                Identifier id = Identifier.tryParse(structureName);
                 if (id == null) {
                     throw new IllegalArgumentException("Invalid structure identifier: " + structureName);
                 }
 
-                StructureTemplateManager manager = server.getStructureManager();
+                StructureTemplateManager manager = server.getStructureTemplateManager();
                 Optional<StructureTemplate> opt = manager.get(id);
                 
                 if (opt.isEmpty()) {
@@ -1408,7 +1408,7 @@ public class BlockScanner {
                             if(be instanceof RandomizableContainerBlockEntity lootable) {
                                 String lootTableId = request.get("loot_table").getAsString();
                                 long seed = request.has("loot_table_seed") ? request.get("loot_table_seed").getAsLong() : 0L;
-                                ResourceKey<LootTable> lootKey = ResourceKey.create(Registries.LOOT_TABLE, ResourceLocation.parse(lootTableId));
+                                ResourceKey<LootTable> lootKey = ResourceKey.create(Registries.LOOT_TABLE, Identifier.parse(lootTableId));
                                 lootable.setLootTable(lootKey, seed);
                                 be.setChanged();
                                 world.sendBlockUpdated(pos, world.getBlockState(pos), world.getBlockState(pos), 3);
@@ -1620,7 +1620,7 @@ public class BlockScanner {
     public static BlockState parseBlockState(String input) {
         int bracketIndex = input.indexOf('[');
         String idStr = bracketIndex == -1 ? input : input.substring(0, bracketIndex);
-        ResourceLocation id = ResourceLocation.parse(idStr);
+        Identifier id = Identifier.parse(idStr);
         Block block = BuiltInRegistries.BLOCK.getValue(id);
         if (block == null) block = net.minecraft.world.level.block.Blocks.AIR;
         BlockState state = block.defaultBlockState();
@@ -1652,13 +1652,13 @@ public class BlockScanner {
     public static String stateToString(BlockState state) {
         StringBuilder sb = new StringBuilder();
         sb.append(BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
-        if (!state.getValues().isEmpty()) {
+        if (!state.getProperties().isEmpty()) {
             sb.append('[');
             boolean first = true;
-            for (java.util.Map.Entry<net.minecraft.world.level.block.state.properties.Property<?>, Comparable<?>> entry : state.getValues().entrySet()) {
+            for (net.minecraft.world.level.block.state.properties.Property<?> property : state.getProperties()) {
                 if (!first) sb.append(',');
                 first = false;
-                sb.append(entry.getKey().getName()).append('=').append(propertyValueToString(entry.getKey(), entry.getValue()));
+                sb.append(property.getName()).append('=').append(propertyValueToString(property, state.getValue(property)));
             }
             sb.append(']');
         }
@@ -1876,9 +1876,9 @@ public class BlockScanner {
                 BlockPos min = selection.getMin();
                 BlockPos max = selection.getMax();
                 
-                Set<ResourceLocation> findSet = new HashSet<>();
+                Set<Identifier> findSet = new HashSet<>();
                 for (JsonElement el : findIds) {
-                    findSet.add(ResourceLocation.parse(el.getAsString()));
+                    findSet.add(Identifier.parse(el.getAsString()));
                 }
                 
                 BlockState replaceState = parseBlockState(replaceId);
@@ -1908,7 +1908,7 @@ public class BlockScanner {
                                     for (int z = Math.max(min.getZ(), cz * 16); z <= Math.min(max.getZ(), cz * 16 + 15); z++) {
                                         BlockPos pos = new BlockPos(x, y, z);
                                         BlockState state = chunk.getBlockState(pos);
-                                        ResourceLocation id = BuiltInRegistries.BLOCK.getKey(state.getBlock());
+                                        Identifier id = BuiltInRegistries.BLOCK.getKey(state.getBlock());
                                         if (findSet.contains(id)) {
                                             matched++;
                                             if (sample.size() < 10) {

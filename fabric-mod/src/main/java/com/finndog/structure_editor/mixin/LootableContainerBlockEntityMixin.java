@@ -27,10 +27,10 @@ public abstract class LootableContainerBlockEntityMixin extends net.minecraft.wo
         if (this.getLootTable() != null && player != null && this.getLevel() instanceof ServerLevel serverWorld) {
             LootTable table = serverWorld.getServer().reloadableRegistries().getLootTable(this.getLootTable());
             if (table == LootTable.EMPTY) {
-                player.displayClientMessage(Component.literal("[Structure Editor] Warning: Loot table '")
-                        .append(Component.literal(this.getLootTable().location().toString()).withStyle(ChatFormatting.YELLOW))
+                player.sendSystemMessage(Component.literal("[Structure Editor] Warning: Loot table '")
+                        .append(Component.literal(this.getLootTable().identifier().toString()).withStyle(ChatFormatting.YELLOW))
                         .append(Component.literal("' not found! Kept ID in chest."))
-                        .withStyle(ChatFormatting.RED), false);
+                        .withStyle(ChatFormatting.RED));
                 cir.setReturnValue(false); // Cancel opening to prevent consuming the lootTableId
             }
         }
