@@ -1304,6 +1304,12 @@ public class BlockScanner {
         }
     }
 
+    // 26.3 writes structure palette entries as {id, properties}; older files use
+    // {Name, Properties}. Accept either so structures saved by any version read back.
+    private static String paletteEntryId(CompoundTag entry) {
+        return entry.getString("id").orElseGet(() -> entry.getString("Name").orElse(""));
+    }
+
     public static String getStructurePalette(MinecraftServer server, String structureName) {
         CompletableFuture<JsonObject> future = new CompletableFuture<>();
         server.execute(() -> {
@@ -1331,7 +1337,7 @@ public class BlockScanner {
                         for (int i = 0; i < palettes.size(); i++) {
                             palettes.getList(i).ifPresent(palette -> {
                                 for (int j = 0; j < palette.size(); j++) {
-                                    palette.getCompound(j).ifPresent(comp -> uniqueBlocks.add(comp.getString("Name").orElse("")));
+                                    palette.getCompound(j).ifPresent(comp -> uniqueBlocks.add(paletteEntryId(comp)));
                                 }
                             });
                         }
@@ -1339,7 +1345,7 @@ public class BlockScanner {
                 } else if (nbt.contains("palette")) {
                     nbt.getList("palette").ifPresent(palette -> {
                         for (int i = 0; i < palette.size(); i++) {
-                            palette.getCompound(i).ifPresent(comp -> uniqueBlocks.add(comp.getString("Name").orElse("")));
+                            palette.getCompound(i).ifPresent(comp -> uniqueBlocks.add(paletteEntryId(comp)));
                         }
                     });
                 }
