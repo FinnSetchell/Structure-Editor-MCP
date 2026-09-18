@@ -1,8 +1,16 @@
 # Structure Editor
 
-A Fabric 1.21.10 mod that exposes an MCP (Model Context Protocol) server so Claude Code can read and edit **jigsaw blocks** and **structure blocks** in your Minecraft world.
+A Fabric **26.3** mod that exposes an MCP (Model Context Protocol) server so Claude Code can read and edit **jigsaw blocks** and **structure blocks** in your Minecraft world.
 
 ---
+
+> **Version note.** This branch targets **Minecraft 26.3** and will not run on older
+> versions. From 26.1 Minecraft ships unobfuscated, Yarn is discontinued, and this mod is
+> built against Mojang mappings with the non-remapping `net.fabricmc.fabric-loom`. For a
+> 1.21.10 server use the `1.21.10` branch instead.
+>
+> The MCP server half (`mcp-server/`) is version-agnostic - it only speaks HTTP to the mod -
+> so it does not need rebuilding when you switch the mod between Minecraft versions.
 
 ## How it works
 
@@ -24,7 +32,7 @@ Minecraft main thread  →  JigsawBlockEntity / StructureBlockBlockEntity
 
 ## Building the Fabric mod
 
-Requires Java 21.
+Requires Java 25 (Minecraft 26.1+ requires it).
 
 ```powershell
 cd fabric-mod
