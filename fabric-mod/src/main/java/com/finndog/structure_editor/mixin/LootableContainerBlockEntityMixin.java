@@ -22,7 +22,7 @@ public abstract class LootableContainerBlockEntityMixin extends net.minecraft.wo
 
     @Shadow public abstract ResourceKey<LootTable> getLootTable();
 
-    @Inject(method = "checkUnlocked", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "canOpen", at = @At("HEAD"), cancellable = true)
     private void checkLootTableExists(Player player, CallbackInfoReturnable<Boolean> cir) {
         if (this.getLootTable() != null && player != null && this.getLevel() instanceof ServerLevel serverWorld) {
             LootTable table = serverWorld.getServer().reloadableRegistries().getLootTable(this.getLootTable());

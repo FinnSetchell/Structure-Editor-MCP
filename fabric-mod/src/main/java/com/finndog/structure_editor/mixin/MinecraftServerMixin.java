@@ -19,7 +19,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(MinecraftServer.class)
 public class MinecraftServerMixin {
 
-    @Inject(method = "getPauseWhenEmptySeconds", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "pauseWhenEmptySeconds", at = @At("HEAD"), cancellable = true)
     private void structureEditor$disablePauseWhenEmpty(CallbackInfoReturnable<Integer> cir) {
         if (StructureEditorMod.getConfig() != null && StructureEditorMod.getConfig().keep_server_ticking) {
             cir.setReturnValue(0);
