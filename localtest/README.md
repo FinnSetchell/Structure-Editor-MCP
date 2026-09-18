@@ -56,6 +56,35 @@ save sits at `entity_load: PENDING` with zero entities - that is the production 
 `rcon.py "<command>"` sends any console command; `rcon.py stop` shuts the server down and the
 JVM exits on its own.
 
+## a second harness for another MC version
+
+To test a port without disturbing the existing one, build a sibling `localsrv-<ver>/`
+and give it its own ports so both can exist side by side. For the 26.3 port that was:
+
+| | 1.21.10 (`localsrv/`) | 26.3 (`localsrv-263/`) |
+|---|---|---|
+| mod HTTP bridge | 25580 | 25680 |
+| RCON | 25598 | 25698 |
+| MC server | 25599 | 25699 |
+| JDK | 21 | 25 |
+
+The launcher for a given version comes straight from Fabric meta, no installer needed:
+
+```
+curl -o fabric-server-launch.jar \
+  "https://meta.fabricmc.net/v2/versions/loader/<mcver>/<loader>/1.1.0/server/jar"
+```
+
+Copy the matching `fabric-api` jar out of the Gradle cache
+(`~/.gradle/caches/modules-2/files-2.1/net.fabricmc.fabric-api/fabric-api/<ver>/`), set
+`port` in `config/structure_editor.json`, and point a copy of `repro.py` / `rcon.py` at the
+new ports. Note the generated-structure folder is `world/generated/<ns>/structure/`
+(singular) on 1.21+ — `repro.py` looks there.
+
+StructureBlockSaver is built against a specific MC version, so it will not load on a
+different one; `structure-blocks` correctly reports `sbs_tracker_missing` without it, and
+the cold-save repro does not need it.
+
 ## iterating
 
 Windows holds the mod jar open while the server runs: `rcon.py stop`, wait for port 25580 to
