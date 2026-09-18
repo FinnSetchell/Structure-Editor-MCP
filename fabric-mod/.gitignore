@@ -19,3 +19,7 @@ Thumbs.db
 
 # Fabric
 run/
+
+# local jar/mapping inspection scratch
+jar_out*/
+mappings/

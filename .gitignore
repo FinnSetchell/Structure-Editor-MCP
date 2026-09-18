@@ -1,3 +1,12 @@
 .idea/
 template/
 template.zip
+
+# local decompile / mapping inspection scratch
+crash.txt
+*.zip
+jar_out*/
+src_jar/
+mappings_unzipped/
+merged_jar_extract/
+temp_extract/

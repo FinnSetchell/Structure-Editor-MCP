@@ -42,8 +42,6 @@ public class StructureEditorMod implements ModInitializer {
     @Override
     public void onInitialize() {
         config = ModConfig.load();
-        PrintEntityMethods.print();
-        TestMethods.print();
         LOGGER.info("Structure Editor initialising — HTTP bridge on {}:{}", config.host, config.port);
 
         httpServer = new EditorHttpServer(config);
