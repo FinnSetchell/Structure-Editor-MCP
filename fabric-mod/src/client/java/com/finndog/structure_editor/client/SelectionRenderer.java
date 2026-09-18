@@ -3,12 +3,12 @@ package com.finndog.structure_editor.client;
 import com.finndog.structure_editor.network.SyncSelectionsPayload;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
-import net.minecraft.client.render.RenderLayer;
-import net.minecraft.client.render.VertexConsumer;
-import net.minecraft.client.render.VertexConsumerProvider;
-import net.minecraft.client.util.math.MatrixStack;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Vec3d;
+import net.minecraft.client.renderer.RenderType;
+import com.mojang.blaze3d.vertex.VertexConsumer;
+import net.minecraft.client.renderer.MultiBufferSource;
+import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import org.joml.Matrix3f;
 
@@ -24,23 +24,23 @@ public class SelectionRenderer {
         Map<String, SyncSelectionsPayload.RegionData> regions = StructureEditorClient.getClientRegions();
         if (regions == null || regions.isEmpty()) return;
 
-        VertexConsumerProvider consumers = context.consumers();
+        MultiBufferSource consumers = context.consumers();
         if (consumers == null) return;
 
-        MatrixStack poseStack = context.matrices();
+        PoseStack poseStack = context.matrices();
         if (poseStack == null) return;
 
-        Vec3d camPos = net.minecraft.client.MinecraftClient.getInstance().gameRenderer.getCamera().getPos();
+        Vec3 camPos = net.minecraft.client.Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
 
-        poseStack.push();
+        poseStack.pushPose();
         poseStack.translate(-camPos.x, -camPos.y, -camPos.z);
 
-        VertexConsumer lines = consumers.getBuffer(RenderLayer.getLines());
+        VertexConsumer lines = consumers.getBuffer(RenderType.lines());
         
-        net.minecraft.client.network.ClientPlayerEntity player = net.minecraft.client.MinecraftClient.getInstance().player;
+        net.minecraft.client.player.LocalPlayer player = net.minecraft.client.Minecraft.getInstance().player;
         String active = "default";
         if (player != null) {
-            active = com.finndog.structure_editor.StructureEditorMod.getWandRegion(player.getMainHandStack()).orElse("default");
+            active = com.finndog.structure_editor.StructureEditorMod.getWandRegion(player.getMainHandItem()).orElse("default");
         }
 
         for (Map.Entry<String, SyncSelectionsPayload.RegionData> entry : regions.entrySet()) {
@@ -70,14 +70,14 @@ public class SelectionRenderer {
             }
         }
 
-        poseStack.pop();
+        poseStack.popPose();
     }
 
-    private static void drawBox(MatrixStack poseStack, VertexConsumer consumer,
+    private static void drawBox(PoseStack poseStack, VertexConsumer consumer,
                                 double x1, double y1, double z1,
                                 double x2, double y2, double z2,
                                 int r, int g, int b, int a) {
-        MatrixStack.Entry pose = poseStack.peek();
+        PoseStack.Pose pose = poseStack.last();
 
         line(consumer, pose, x1,y1,z1, x2,y1,z1, r,g,b,a);
         line(consumer, pose, x2,y1,z1, x2,y1,z2, r,g,b,a);
@@ -93,7 +93,7 @@ public class SelectionRenderer {
         line(consumer, pose, x1,y1,z2, x1,y2,z2, r,g,b,a);
     }
 
-    private static void line(VertexConsumer consumer, MatrixStack.Entry pose,
+    private static void line(VertexConsumer consumer, PoseStack.Pose pose,
                              double x1, double y1, double z1, double x2, double y2, double z2,
                              int r, int g, int b, int a) {
         float dx = (float)(x2 - x1);
@@ -102,14 +102,14 @@ public class SelectionRenderer {
         float len = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
         if (len == 0) return;
 
-        Matrix4f mat = pose.getPositionMatrix();
-        Matrix3f nmat = pose.getNormalMatrix();
+        Matrix4f mat = pose.pose();
+        Matrix3f nmat = pose.normal();
         
-        consumer.vertex(mat, (float) x1, (float) y1, (float) z1)
-                .color(r, g, b, a)
-                .normal(pose, dx / len, dy / len, dz / len);
-        consumer.vertex(mat, (float) x2, (float) y2, (float) z2)
-                .color(r, g, b, a)
-                .normal(pose, dx / len, dy / len, dz / len);
+        consumer.addVertex(mat, (float) x1, (float) y1, (float) z1)
+                .setColor(r, g, b, a)
+                .setNormal(pose, dx / len, dy / len, dz / len);
+        consumer.addVertex(mat, (float) x2, (float) y2, (float) z2)
+                .setColor(r, g, b, a)
+                .setNormal(pose, dx / len, dy / len, dz / len);
     }
 }

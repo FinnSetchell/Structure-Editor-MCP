@@ -1,16 +1,16 @@
 package com.finndog.structure_editor;
 
-import net.minecraft.nbt.NbtCompound;
-import net.minecraft.nbt.NbtElement;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.nbt.NbtIo;
-import net.minecraft.nbt.NbtList;
-import net.minecraft.nbt.NbtSizeTracker;
-import net.minecraft.registry.RegistryKey;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.NbtAccounter;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.util.Identifier;
-import net.minecraft.util.WorldSavePath;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.world.World;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.level.storage.LevelResource;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.Level;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -28,9 +28,9 @@ public class SbsRegistryReader {
         public final BlockPos pos;
         public final String name;
         public final String mode;
-        public final Identifier dimension;
+        public final ResourceLocation dimension;
 
-        public Entry(BlockPos pos, String name, String mode, Identifier dimension) {
+        public Entry(BlockPos pos, String name, String mode, ResourceLocation dimension) {
             this.pos = pos;
             this.name = name;
             this.mode = mode;
@@ -53,36 +53,36 @@ public class SbsRegistryReader {
 
     // Overworld / nether / end map to <root>/data, <root>/DIM-1/data, <root>/DIM1/data.
     // Custom dimensions live at <root>/dimensions/<namespace>/<path>/data.
-    private static Path dataDirFor(MinecraftServer server, RegistryKey<World> dim) {
-        Path root = server.getSavePath(WorldSavePath.ROOT);
-        if (dim.equals(World.OVERWORLD)) return root.resolve("data");
-        if (dim.equals(World.NETHER))    return root.resolve("DIM-1").resolve("data");
-        if (dim.equals(World.END))       return root.resolve("DIM1").resolve("data");
-        Identifier id = dim.getValue();
+    private static Path dataDirFor(MinecraftServer server, ResourceKey<Level> dim) {
+        Path root = server.getWorldPath(LevelResource.ROOT);
+        if (dim.equals(Level.OVERWORLD)) return root.resolve("data");
+        if (dim.equals(Level.NETHER))    return root.resolve("DIM-1").resolve("data");
+        if (dim.equals(Level.END))       return root.resolve("DIM1").resolve("data");
+        ResourceLocation id = dim.location();
         return root.resolve("dimensions").resolve(id.getNamespace()).resolve(id.getPath()).resolve("data");
     }
 
-    public static Result read(MinecraftServer server, RegistryKey<World> dim) {
+    public static Result read(MinecraftServer server, ResourceKey<Level> dim) {
         Path file = dataDirFor(server, dim).resolve(TRACKER_FILE);
         if (!Files.isRegularFile(file)) {
             return Result.missing();
         }
-        NbtCompound root;
+        CompoundTag root;
         try {
-            root = NbtIo.readCompressed(file, NbtSizeTracker.ofUnlimitedBytes());
+            root = NbtIo.readCompressed(file, NbtAccounter.unlimitedHeap());
         } catch (Exception e) {
             StructureEditorMod.LOGGER.warn("Failed to read sbs tracker at {}: {}", file, e.toString());
             return Result.missing();
         }
-        NbtCompound data = root.getCompound("data").orElse(null);
+        CompoundTag data = root.getCompound("data").orElse(null);
         if (data == null) return Result.of(List.of());
-        NbtList list = data.getList("structures").orElse(null);
+        ListTag list = data.getList("structures").orElse(null);
         if (list == null) return Result.of(List.of());
 
-        Identifier dimId = dim.getValue();
+        ResourceLocation dimId = dim.location();
         List<Entry> out = new ArrayList<>(list.size());
         for (int i = 0; i < list.size(); i++) {
-            NbtCompound entry = list.getCompound(i).orElse(null);
+            CompoundTag entry = list.getCompound(i).orElse(null);
             if (entry == null) continue;
             int[] posArr = entry.getIntArray("pos").orElse(null);
             if (posArr == null || posArr.length < 3) continue;
@@ -93,7 +93,7 @@ public class SbsRegistryReader {
         return Result.of(out);
     }
 
-    // Yarn 1.21.5+ moved a bunch of NbtCompound getters to Optional. NbtList.getCompound
+    // Yarn 1.21.5+ moved a bunch of CompoundTag getters to Optional. ListTag.getCompound
     // isn't Optional-based in every subversion, so tolerate either shape.
     // (Handled directly with orElse above.)
 }

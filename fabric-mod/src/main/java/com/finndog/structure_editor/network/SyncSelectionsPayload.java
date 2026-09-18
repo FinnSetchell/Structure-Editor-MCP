@@ -1,34 +1,34 @@
 package com.finndog.structure_editor.network;
 
-import net.minecraft.network.RegistryByteBuf;
-import net.minecraft.network.codec.PacketCodec;
-import net.minecraft.network.codec.PacketCodecs;
-import net.minecraft.network.packet.CustomPayload;
-import net.minecraft.util.Identifier;
-import net.minecraft.util.math.BlockPos;
+import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.network.codec.ByteBufCodecs;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.core.BlockPos;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
-public record SyncSelectionsPayload(Map<String, RegionData> regions) implements CustomPayload {
+public record SyncSelectionsPayload(Map<String, RegionData> regions) implements CustomPacketPayload {
 
-    public static final CustomPayload.Id<SyncSelectionsPayload> ID = new CustomPayload.Id<>(Identifier.of("structure_editor", "sync_selections"));
+    public static final CustomPacketPayload.Type<SyncSelectionsPayload> ID = new CustomPacketPayload.Type<>(ResourceLocation.fromNamespaceAndPath("structure_editor", "sync_selections"));
 
     public record RegionData(Optional<BlockPos> pos1, Optional<BlockPos> pos2) {}
 
-    public static final PacketCodec<RegistryByteBuf, RegionData> REGION_CODEC = PacketCodec.tuple(
-        BlockPos.PACKET_CODEC.collect(PacketCodecs::optional), RegionData::pos1,
-        BlockPos.PACKET_CODEC.collect(PacketCodecs::optional), RegionData::pos2,
+    public static final StreamCodec<RegistryFriendlyByteBuf, RegionData> REGION_CODEC = StreamCodec.composite(
+        BlockPos.STREAM_CODEC.apply(ByteBufCodecs::optional), RegionData::pos1,
+        BlockPos.STREAM_CODEC.apply(ByteBufCodecs::optional), RegionData::pos2,
         RegionData::new
     );
 
-    public static final PacketCodec<RegistryByteBuf, SyncSelectionsPayload> CODEC = PacketCodec.tuple(
-        PacketCodecs.map(HashMap::new, PacketCodecs.STRING, REGION_CODEC), SyncSelectionsPayload::regions,
+    public static final StreamCodec<RegistryFriendlyByteBuf, SyncSelectionsPayload> CODEC = StreamCodec.composite(
+        ByteBufCodecs.map(HashMap::new, ByteBufCodecs.STRING_UTF8, REGION_CODEC), SyncSelectionsPayload::regions,
         SyncSelectionsPayload::new
     );
 
     @Override
-    public Id<? extends CustomPayload> getId() {
+    public Type<? extends CustomPacketPayload> type() {
         return ID;
     }
 }

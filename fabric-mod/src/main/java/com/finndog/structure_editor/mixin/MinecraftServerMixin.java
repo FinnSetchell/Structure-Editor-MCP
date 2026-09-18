@@ -9,12 +9,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 // Vanilla 1.21.2+ pauses the server tick loop after `pause-when-empty-seconds` of no players.
 // While paused the task queue still drains, but world ticks do not: chunk tickets still load
-// block chunks, yet ServerWorld.tick -> entityManager.tick -> processPendingLoads never runs,
+// block chunks, yet ServerLevel.tick -> entityManager.tick -> processPendingLoads never runs,
 // so finished entity-file reads are never collected and every chunk stays PENDING. Saves then
 // silently capture zero entities. Force the threshold to 0 so the server keeps ticking
 // whenever the mod is loaded (opt-out via config).
 //
-// This covers the integrated/base path only. MinecraftDedicatedServer overrides the getter,
+// This covers the integrated/base path only. DedicatedServer overrides the getter,
 // see MinecraftDedicatedServerMixin - both are required.
 @Mixin(MinecraftServer.class)
 public class MinecraftServerMixin {

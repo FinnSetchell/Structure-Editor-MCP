@@ -6,14 +6,14 @@ import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
-import net.minecraft.component.DataComponentTypes;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.text.Text;
-import net.minecraft.util.ActionResult;
-import net.minecraft.util.math.BlockPos;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.core.BlockPos;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -23,8 +23,8 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-import static net.minecraft.server.command.CommandManager.literal;
-import static net.minecraft.server.command.CommandManager.argument;
+import static net.minecraft.commands.Commands.literal;
+import static net.minecraft.commands.Commands.argument;
 import static com.mojang.brigadier.arguments.StringArgumentType.word;
 import static com.mojang.brigadier.arguments.StringArgumentType.getString;
 
@@ -63,12 +63,12 @@ public class StructureEditorMod implements ModInitializer {
 
     public static void syncSelectionsToAll() {
         if(mcServer == null || httpServer == null) return;
-        for (ServerPlayerEntity player : mcServer.getPlayerManager().getPlayerList()) {
+        for (ServerPlayer player : mcServer.getPlayerList().getPlayers()) {
             syncSelectionsToPlayer(player);
         }
     }
 
-    public static void syncSelectionsToPlayer(ServerPlayerEntity player) {
+    public static void syncSelectionsToPlayer(ServerPlayer player) {
         if(httpServer == null) return;
         SelectionManager sel = httpServer.getSelection();
         Map<String, SyncSelectionsPayload.RegionData> regions = new HashMap<>();
@@ -102,7 +102,7 @@ public class StructureEditorMod implements ModInitializer {
                     .then(literal("list")
                         .executes(ctx -> {
                             SelectionManager sel = httpServer.getSelection();
-                            ctx.getSource().sendFeedback(() -> Text.literal("§7[StructureEditor]§f Saved regions: " + String.join(", ", sel.getRegions().keySet())), false);
+                            ctx.getSource().sendSuccess(() -> Component.literal("§7[StructureEditor]§f Saved regions: " + String.join(", ", sel.getRegions().keySet())), false);
                             return 1;
                         }))
                     .then(literal("clear")
@@ -119,26 +119,26 @@ public class StructureEditorMod implements ModInitializer {
                                 String name = getString(ctx, "name");
                                 httpServer.getSelection().clear(name);
                                 syncSelectionsToAll();
-                                ctx.getSource().sendFeedback(() -> Text.literal("§7[StructureEditor]§f Cleared region: " + name), false);
+                                ctx.getSource().sendSuccess(() -> Component.literal("§7[StructureEditor]§f Cleared region: " + name), false);
                                 return 1;
                             })))
                     .then(literal("clearall")
                         .executes(ctx -> {
                             int n = httpServer.getSelection().removeAll();
                             syncSelectionsToAll();
-                            ctx.getSource().sendFeedback(() -> Text.literal("§7[StructureEditor]§f Cleared all " + n + " regions (default reset to empty)"), false);
+                            ctx.getSource().sendSuccess(() -> Component.literal("§7[StructureEditor]§f Cleared all " + n + " regions (default reset to empty)"), false);
                             return 1;
                         })))
                 .then(literal("clear")
                     .executes(ctx -> {
-                        ServerPlayerEntity player = ctx.getSource().getPlayer();
+                        ServerPlayer player = ctx.getSource().getPlayer();
                         if(player == null) return 0;
-                        getWandRegion(player.getMainHandStack()).ifPresentOrElse(region -> {
+                        getWandRegion(player.getMainHandItem()).ifPresentOrElse(region -> {
                             httpServer.getSelection().clear(region);
                             syncSelectionsToAll();
-                            ctx.getSource().sendFeedback(() -> Text.literal("§7[StructureEditor]§f Cleared active region: " + region), false);
+                            ctx.getSource().sendSuccess(() -> Component.literal("§7[StructureEditor]§f Cleared active region: " + region), false);
                         }, () -> {
-                            ctx.getSource().sendError(Text.literal("§cYou must hold a Structure Editor Wand to clear its active region."));
+                            ctx.getSource().sendFailure(Component.literal("§cYou must hold a Structure Editor Wand to clear its active region."));
                         });
                         return 1;
                     }))
@@ -146,25 +146,25 @@ public class StructureEditorMod implements ModInitializer {
         });
     }
 
-    private int giveWand(ServerPlayerEntity player, String regionName) {
+    private int giveWand(ServerPlayer player, String regionName) {
         if(player == null) return 0;
         ItemStack wand = new ItemStack(Items.WOODEN_AXE);
-        wand.set(DataComponentTypes.CUSTOM_NAME, Text.literal("§dStructure Wand §8[§b" + regionName + "§8]"));
+        wand.set(DataComponents.CUSTOM_NAME, Component.literal("§dStructure Wand §8[§b" + regionName + "§8]"));
         
-        net.minecraft.nbt.NbtCompound nbt = new net.minecraft.nbt.NbtCompound();
+        net.minecraft.nbt.CompoundTag nbt = new net.minecraft.nbt.CompoundTag();
         nbt.putString("sedit_region", regionName);
-        wand.set(DataComponentTypes.CUSTOM_DATA, net.minecraft.component.type.NbtComponent.of(nbt));
+        wand.set(DataComponents.CUSTOM_DATA, net.minecraft.world.item.component.CustomData.of(nbt));
         
-        player.getInventory().insertStack(wand);
-        player.sendMessage(Text.literal("§7[StructureEditor]§f Wand for region '"+regionName+"' added. Left-click=pos1, Right-click=pos2"), false);
+        player.getInventory().add(wand);
+        player.displayClientMessage(Component.literal("§7[StructureEditor]§f Wand for region '"+regionName+"' added. Left-click=pos1, Right-click=pos2"), false);
         return 1;
     }
 
     public static Optional<String> getWandRegion(ItemStack stack) {
         if (stack == null || stack.getItem() != Items.WOODEN_AXE) return Optional.empty();
-        net.minecraft.component.type.NbtComponent customData = stack.get(DataComponentTypes.CUSTOM_DATA);
+        net.minecraft.world.item.component.CustomData customData = stack.get(DataComponents.CUSTOM_DATA);
         if (customData != null) {
-            net.minecraft.nbt.NbtCompound nbt = customData.copyNbt();
+            net.minecraft.nbt.CompoundTag nbt = customData.copyTag();
             if (nbt.contains("sedit_region")) {
                 return (Optional<String>) (Object) nbt.getString("sedit_region");
             }
@@ -174,40 +174,40 @@ public class StructureEditorMod implements ModInitializer {
 
     private void registerWandListener() {
         UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> {
-            if(world.isClient()) return ActionResult.PASS;
-            if(!(player instanceof ServerPlayerEntity sp)) return ActionResult.PASS;
+            if(world.isClientSide()) return InteractionResult.PASS;
+            if(!(player instanceof ServerPlayer sp)) return InteractionResult.PASS;
             
-            Optional<String> activeOpt = getWandRegion(player.getStackInHand(hand));
-            if(activeOpt.isEmpty()) return ActionResult.PASS;
+            Optional<String> activeOpt = getWandRegion(player.getItemInHand(hand));
+            if(activeOpt.isEmpty()) return InteractionResult.PASS;
             
             String active = activeOpt.get();
             BlockPos pos = hitResult.getBlockPos();
             SelectionManager sel = httpServer.getSelection();
             SelectionManager.Region region = sel.getRegion(active);
-            if(region != null && pos.equals(region.pos2)) return ActionResult.FAIL;
+            if(region != null && pos.equals(region.pos2)) return InteractionResult.FAIL;
 
             sel.setPos2(active, pos);
             syncSelectionsToAll();
-            sp.sendMessage(Text.literal("§7[StructureEditor]§f ["+active+"] pos2 set: " + pos.toShortString()), true);
-            return ActionResult.SUCCESS;
+            sp.displayClientMessage(Component.literal("§7[StructureEditor]§f ["+active+"] pos2 set: " + pos.toShortString()), true);
+            return InteractionResult.SUCCESS;
         });
 
         net.fabricmc.fabric.api.event.player.AttackBlockCallback.EVENT.register((player, world, hand, pos, direction) -> {
-            if(world.isClient()) return ActionResult.PASS;
-            if(!(player instanceof ServerPlayerEntity sp)) return ActionResult.PASS;
+            if(world.isClientSide()) return InteractionResult.PASS;
+            if(!(player instanceof ServerPlayer sp)) return InteractionResult.PASS;
             
-            Optional<String> activeOpt = getWandRegion(player.getStackInHand(hand));
-            if(activeOpt.isEmpty()) return ActionResult.PASS;
+            Optional<String> activeOpt = getWandRegion(player.getItemInHand(hand));
+            if(activeOpt.isEmpty()) return InteractionResult.PASS;
             
             String active = activeOpt.get();
             SelectionManager sel = httpServer.getSelection();
             SelectionManager.Region region = sel.getRegion(active);
-            if(region != null && pos.equals(region.pos1)) return ActionResult.FAIL;
+            if(region != null && pos.equals(region.pos1)) return InteractionResult.FAIL;
 
             sel.setPos1(active, pos);
             syncSelectionsToAll();
-            sp.sendMessage(Text.literal("§7[StructureEditor]§f ["+active+"] pos1 set: " + pos.toShortString()), true);
-            return ActionResult.SUCCESS;
+            sp.displayClientMessage(Component.literal("§7[StructureEditor]§f ["+active+"] pos1 set: " + pos.toShortString()), true);
+            return InteractionResult.SUCCESS;
         });
     }
 

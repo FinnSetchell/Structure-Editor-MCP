@@ -1,10 +1,10 @@
 package com.finndog.structure_editor.mixin.client;
 
-import net.minecraft.block.entity.BlockEntity;
-import net.minecraft.block.entity.JigsawBlockEntity;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.screen.ingame.JigsawBlockScreen;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.JigsawBlockEntity;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.screens.inventory.JigsawBlockEditScreen;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -12,26 +12,26 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-@Mixin(JigsawBlockScreen.class)
+@Mixin(JigsawBlockEditScreen.class)
 public class JigsawScreenMixin {
 
-    @Shadow @Final private JigsawBlockEntity jigsaw;
+    @Shadow @Final private JigsawBlockEntity jigsawEntity;
     private String se_cachedName;
 
     @Inject(method = "init", at = @At("TAIL"))
     private void onInit(CallbackInfo ci) {
-        this.se_cachedName = this.jigsaw.getName().toString();
+        this.se_cachedName = this.jigsawEntity.getName().toString();
     }
 
     @Inject(method = "render", at = @At("HEAD"))
-    private void onRender(DrawContext context, int mouseX, int mouseY, float delta, CallbackInfo ci) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.world != null) {
-            BlockEntity current = client.world.getBlockEntity(this.jigsaw.getPos());
-            if (current != this.jigsaw || !this.jigsaw.getName().toString().equals(this.se_cachedName)) {
+    private void onRender(GuiGraphics context, int mouseX, int mouseY, float delta, CallbackInfo ci) {
+        Minecraft client = Minecraft.getInstance();
+        if (client.level != null) {
+            BlockEntity current = client.level.getBlockEntity(this.jigsawEntity.getBlockPos());
+            if (current != this.jigsawEntity || !this.jigsawEntity.getName().toString().equals(this.se_cachedName)) {
                 client.setScreen(null);
                 if (client.player != null) {
-                    client.player.sendMessage(net.minecraft.text.Text.literal("§cClosed GUI: Block edited externally."), true);
+                    client.player.displayClientMessage(net.minecraft.network.chat.Component.literal("§cClosed GUI: Block edited externally."), true);
                 }
             }
         }

@@ -25,7 +25,10 @@ loom {
 
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    // Yarn is discontinued from MC 26.1 (the game ships unobfuscated), so the source is on
+    // Mojang mappings. Migrated on 1.21.10 first so the name change could be verified
+    // independently of the version jump.
+    mappings loom.officialMojangMappings()
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 }
@@ -41,6 +44,8 @@ processResources {
 
 tasks.withType(JavaCompile).configureEach {
     it.options.release = 21
+    // javac stops at 100 errors by default, which hides the tail during a mappings port
+    it.options.compilerArgs << '-Xmaxerrs' << '2000'
 }
 
 java {

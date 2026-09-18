@@ -5,16 +5,16 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
-import net.minecraft.block.entity.BlockEntity;
-import net.minecraft.block.entity.StructureBlockBlockEntity;
-import net.minecraft.nbt.NbtCompound;
-import net.minecraft.registry.RegistryKey;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.StructureBlockEntity;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.world.ServerWorld;
-import net.minecraft.text.Text;
-import net.minecraft.util.Identifier;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.world.World;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.Level;
 
 import java.io.*;
 import java.net.InetSocketAddress;
@@ -160,9 +160,9 @@ public class EditorHttpServer {
     private void broadcastActionBar(String message) {
         if(mcServer != null) {
             mcServer.execute(() -> {
-                Text text = Text.literal("§7[Editor] §f" + message);
-                mcServer.getPlayerManager().getPlayerList().forEach(player -> {
-                    player.sendMessage(text, true);
+                Component text = Component.literal("§7[Editor] §f" + message);
+                mcServer.getPlayerList().getPlayers().forEach(player -> {
+                    player.displayClientMessage(text, true);
                 });
             });
         }
@@ -294,13 +294,13 @@ public class EditorHttpServer {
                     JsonObject body = JsonParser.parseString(readBody(exchange)).getAsJsonObject();
                     if(body.has("pos1") && body.get("pos1").isJsonObject()) {
                         JsonObject p = body.getAsJsonObject("pos1");
-                        selection.setPos1(regionName, new net.minecraft.util.math.BlockPos(
+                        selection.setPos1(regionName, new net.minecraft.core.BlockPos(
                             p.get("x").getAsInt(), p.get("y").getAsInt(), p.get("z").getAsInt()
                         ));
                     }
                     if(body.has("pos2") && body.get("pos2").isJsonObject()) {
                         JsonObject p = body.getAsJsonObject("pos2");
-                        selection.setPos2(regionName, new net.minecraft.util.math.BlockPos(
+                        selection.setPos2(regionName, new net.minecraft.core.BlockPos(
                             p.get("x").getAsInt(), p.get("y").getAsInt(), p.get("z").getAsInt()
                         ));
                     }
@@ -481,7 +481,7 @@ public class EditorHttpServer {
                     path = parts[1];
                 }
 
-                java.nio.file.Path generatedDir = mcServer.getSavePath(net.minecraft.util.WorldSavePath.GENERATED);
+                java.nio.file.Path generatedDir = mcServer.getWorldPath(net.minecraft.world.level.storage.LevelResource.GENERATED_DIR);
                 java.nio.file.Path file = generatedDir.resolve(namespace).resolve("structures").resolve(path + ".nbt");
 
                 if(!java.nio.file.Files.exists(file) || java.nio.file.Files.isDirectory(file)) {
@@ -802,7 +802,7 @@ public class EditorHttpServer {
                 java.nio.file.Files.writeString(targetFile.toPath(), contentStr, StandardCharsets.UTF_8);
 
                 // Automatically reload datapacks so the new loot table is available
-                mcServer.getCommandManager().executeWithPrefix(mcServer.getCommandSource(), "reload");
+                mcServer.getCommands().performPrefixedCommand(mcServer.createCommandSourceStack(), "reload");
 
                 JsonObject ok = new JsonObject();
                 ok.addProperty("success", true);
@@ -817,17 +817,17 @@ public class EditorHttpServer {
     // Resolves a dimension name from a request. Accepts a bare id ("nether"),
     // a short form ("minecraft:overworld"), or a full "namespace:path" for
     // custom dims. Defaults to overworld when the param is missing.
-    private RegistryKey<World> resolveDim(String raw) {
-        if(raw == null || raw.isEmpty()) return World.OVERWORLD;
+    private ResourceKey<Level> resolveDim(String raw) {
+        if(raw == null || raw.isEmpty()) return Level.OVERWORLD;
         String s = raw.trim().toLowerCase(java.util.Locale.ROOT);
         switch(s) {
-            case "overworld": case "minecraft:overworld": return World.OVERWORLD;
-            case "nether": case "the_nether": case "minecraft:the_nether": return World.NETHER;
-            case "end": case "the_end": case "minecraft:the_end": return World.END;
+            case "overworld": case "minecraft:overworld": return Level.OVERWORLD;
+            case "nether": case "the_nether": case "minecraft:the_nether": return Level.NETHER;
+            case "end": case "the_end": case "minecraft:the_end": return Level.END;
         }
-        Identifier id = Identifier.tryParse(s);
+        ResourceLocation id = ResourceLocation.tryParse(s);
         if(id == null) return null;
-        return RegistryKey.of(net.minecraft.registry.RegistryKeys.WORLD, id);
+        return ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION, id);
     }
 
     private String queryParam(HttpExchange exchange, String key) {
@@ -858,7 +858,7 @@ public class EditorHttpServer {
             String dimRaw = queryParam(exchange, "dim");
             String nameFilter = queryParam(exchange, "name_filter");
             String modeFilter = queryParam(exchange, "mode_filter");
-            RegistryKey<World> dim = resolveDim(dimRaw);
+            ResourceKey<Level> dim = resolveDim(dimRaw);
             if(dim == null) {
                 sendJson(exchange, 400, GSON.toJson(errorJson("Unrecognised dim: " + dimRaw)));
                 return;
@@ -868,7 +868,7 @@ public class EditorHttpServer {
             if(!r.present) {
                 JsonObject err = new JsonObject();
                 err.addProperty("error", "sbs_tracker_missing");
-                err.addProperty("dim", dim.getValue().toString());
+                err.addProperty("dim", dim.location().toString());
                 err.addProperty("hint", "Install StructureBlockSaver on this world, or load a structure block once to seed its tracker.");
                 sendJson(exchange, 404, GSON.toJson(err));
                 return;
@@ -893,7 +893,7 @@ public class EditorHttpServer {
             out.addProperty("count", count);
             out.addProperty("total", r.entries.size());
             out.addProperty("source", "sbs");
-            out.addProperty("dim", dim.getValue().toString());
+            out.addProperty("dim", dim.location().toString());
             out.add("blocks", blocks);
             sendJson(exchange, 200, GSON.toJson(out));
         }
@@ -917,7 +917,7 @@ public class EditorHttpServer {
                 return;
             }
             String dimRaw = queryParam(exchange, "dim");
-            RegistryKey<World> dim = resolveDim(dimRaw);
+            ResourceKey<Level> dim = resolveDim(dimRaw);
             if(dim == null) {
                 sendJson(exchange, 400, GSON.toJson(errorJson("Unrecognised dim: " + dimRaw)));
                 return;
@@ -932,12 +932,12 @@ public class EditorHttpServer {
     // JsonObject that either has an "error" key describing the failure (missing tracker,
     // no match, ambiguous, not_a_structure_block, ...) or the bounds payload
     // (pos1, pos2, structure_block, structure_size, mode, dim).
-    private JsonObject resolveStructureBounds(String name, RegistryKey<World> dim) {
+    private JsonObject resolveStructureBounds(String name, ResourceKey<Level> dim) {
         SbsRegistryReader.Result r = SbsRegistryReader.read(mcServer, dim);
         if(!r.present) {
             JsonObject err = new JsonObject();
             err.addProperty("error", "sbs_tracker_missing");
-            err.addProperty("dim", dim.getValue().toString());
+            err.addProperty("dim", dim.location().toString());
             return err;
         }
         java.util.List<SbsRegistryReader.Entry> matches = new java.util.ArrayList<>();
@@ -947,7 +947,7 @@ public class EditorHttpServer {
         if(matches.isEmpty()) {
             JsonObject err = new JsonObject();
             err.addProperty("error", "not_found");
-            err.addProperty("message", "No structure block with name '" + name + "' in dim " + dim.getValue());
+            err.addProperty("message", "No structure block with name '" + name + "' in dim " + dim.location());
             return err;
         }
         if(matches.size() > 1) {
@@ -965,25 +965,25 @@ public class EditorHttpServer {
             return err;
         }
         SbsRegistryReader.Entry entry = matches.get(0);
-        ServerWorld world = mcServer.getWorld(dim);
+        ServerLevel world = mcServer.getLevel(dim);
         if(world == null) {
             JsonObject err = new JsonObject();
             err.addProperty("error", "no_world");
-            err.addProperty("message", "Server has no loaded world for dim " + dim.getValue());
+            err.addProperty("message", "Server has no loaded world for dim " + dim.location());
             return err;
         }
         final BlockPos entryPos = entry.pos;
-        java.util.concurrent.CompletableFuture<StructureBlockBlockEntity> beFuture = new java.util.concurrent.CompletableFuture<>();
+        java.util.concurrent.CompletableFuture<StructureBlockEntity> beFuture = new java.util.concurrent.CompletableFuture<>();
         mcServer.execute(() -> {
             try {
                 world.getChunk(entryPos.getX() >> 4, entryPos.getZ() >> 4);
                 BlockEntity found = world.getBlockEntity(entryPos);
-                beFuture.complete(found instanceof StructureBlockBlockEntity s ? s : null);
+                beFuture.complete(found instanceof StructureBlockEntity s ? s : null);
             } catch(Exception e) {
                 beFuture.completeExceptionally(e);
             }
         });
-        StructureBlockBlockEntity sbe;
+        StructureBlockEntity sbe;
         try {
             sbe = beFuture.get(10, java.util.concurrent.TimeUnit.SECONDS);
         } catch(Exception e) {
@@ -1000,13 +1000,13 @@ public class EditorHttpServer {
         }
 
         BlockPos sbPos = entry.pos;
-        BlockPos offset = sbe.getOffset();
-        NbtCompound nbt = sbe.createNbt(world.getRegistryManager());
+        BlockPos offset = sbe.getStructurePos();
+        CompoundTag nbt = sbe.saveWithoutMetadata(world.registryAccess());
         int sx = nbt.getInt("sizeX").orElse(0);
         int sy = nbt.getInt("sizeY").orElse(0);
         int sz = nbt.getInt("sizeZ").orElse(0);
-        BlockPos regionMin = sbPos.add(offset);
-        BlockPos regionMax = regionMin.add(Math.max(sx - 1, 0), Math.max(sy - 1, 0), Math.max(sz - 1, 0));
+        BlockPos regionMin = sbPos.offset(offset);
+        BlockPos regionMax = regionMin.offset(Math.max(sx - 1, 0), Math.max(sy - 1, 0), Math.max(sz - 1, 0));
         int minX = Math.min(sbPos.getX(), Math.min(regionMin.getX(), regionMax.getX()));
         int minY = Math.min(sbPos.getY(), Math.min(regionMin.getY(), regionMax.getY()));
         int minZ = Math.min(sbPos.getZ(), Math.min(regionMin.getZ(), regionMax.getZ()));
@@ -1018,7 +1018,7 @@ public class EditorHttpServer {
         ok.addProperty("success", true);
         ok.addProperty("name", name);
         ok.addProperty("mode", nbt.getString("mode").orElse(entry.mode));
-        ok.addProperty("dim", dim.getValue().toString());
+        ok.addProperty("dim", dim.location().toString());
         JsonObject sbJ = new JsonObject();
         sbJ.addProperty("x", sbPos.getX()); sbJ.addProperty("y", sbPos.getY()); sbJ.addProperty("z", sbPos.getZ());
         ok.add("structure_block", sbJ);
@@ -1107,8 +1107,8 @@ public class EditorHttpServer {
             java.util.concurrent.CompletableFuture<JsonObject> f = new java.util.concurrent.CompletableFuture<>();
             mcServer.execute(() -> {
                 try {
-                    ServerWorld world = mcServer.getOverworld();
-                    net.minecraft.util.math.ChunkPos cp = new net.minecraft.util.math.ChunkPos(cx, cz);
+                    ServerLevel world = mcServer.overworld();
+                    net.minecraft.world.level.ChunkPos cp = new net.minecraft.world.level.ChunkPos(cx, cz);
                     long key = cp.toLong();
                     com.finndog.structure_editor.mixin.ServerEntityManagerInvoker em =
                         (com.finndog.structure_editor.mixin.ServerEntityManagerInvoker)
@@ -1118,8 +1118,8 @@ public class EditorHttpServer {
                     JsonObject o = new JsonObject();
                     o.addProperty("cx", cx);
                     o.addProperty("cz", cz);
-                    o.addProperty("block_chunk_resident", world.getChunkManager().isChunkLoaded(cx, cz));
-                    o.addProperty("block_ticking", world.getChunkManager().isTickingFutureReady(key));
+                    o.addProperty("block_chunk_resident", world.getChunkSource().hasChunk(cx, cz));
+                    o.addProperty("block_ticking", world.getChunkSource().isPositionTicking(key));
                     o.addProperty("entity_load", load == null ? "FRESH" : load.toString());
                     o.addProperty("entity_visibility", vis == null ? "ABSENT" : vis.toString());
                     o.addProperty("entities_loaded", em.structureEditor$isLoaded(key));
@@ -1200,7 +1200,7 @@ public class EditorHttpServer {
                 String dimRaw = body.has("dim") && !body.get("dim").isJsonNull() ? body.get("dim").getAsString() : null;
                 String regionName = body.has("region") && !body.get("region").isJsonNull() ? body.get("region").getAsString() : "default";
 
-                RegistryKey<World> dim = resolveDim(dimRaw);
+                ResourceKey<Level> dim = resolveDim(dimRaw);
                 if(dim == null) {
                     sendJson(exchange, 400, GSON.toJson(errorJson("Unrecognised dim: " + dimRaw)));
                     return;
