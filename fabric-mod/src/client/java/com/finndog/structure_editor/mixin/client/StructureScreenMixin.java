@@ -1,38 +1,13 @@
 package com.finndog.structure_editor.mixin.client;
 
-import net.minecraft.world.level.block.entity.BlockEntity;
-import net.minecraft.world.level.block.entity.StructureBlockEntity;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.StructureBlockEditScreen;
-import org.spongepowered.asm.mixin.Final;
+import net.minecraft.world.level.block.entity.StructureBlockEntity;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
-import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.gen.Accessor;
 
+// Accessor only - see JigsawScreenMixin.
 @Mixin(StructureBlockEditScreen.class)
-public class StructureScreenMixin {
-
-    @Shadow @Final private StructureBlockEntity structure;
-    private String se_cachedName;
-
-    @Inject(method = "init", at = @At("TAIL"))
-    private void onInit(CallbackInfo ci) {
-        this.se_cachedName = this.structure.getStructureName();
-    }
-
-    @Inject(method = "tick", at = @At("TAIL"))
-    private void onTick(CallbackInfo ci) {
-        Minecraft client = Minecraft.getInstance();
-        if (client.level != null) {
-            BlockEntity current = client.level.getBlockEntity(this.structure.getBlockPos());
-            if (current != this.structure || !this.structure.getStructureName().equals(this.se_cachedName)) {
-                client.setScreenAndShow(null);
-                if (client.player != null) {
-                    client.player.sendOverlayMessage(net.minecraft.network.chat.Component.literal("§cClosed GUI: Block edited externally."));
-                }
-            }
-        }
-    }
+public interface StructureScreenMixin {
+    @Accessor("structure")
+    StructureBlockEntity structureEditor$getStructure();
 }

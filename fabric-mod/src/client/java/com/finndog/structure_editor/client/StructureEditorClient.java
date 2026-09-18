@@ -14,6 +14,7 @@ public class StructureEditorClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         SelectionRenderer.register();
+        ScreenGuard.register();
 
         ClientPlayNetworking.registerGlobalReceiver(SyncSelectionsPayload.ID, (payload, context) -> {
             context.client().execute(() -> {

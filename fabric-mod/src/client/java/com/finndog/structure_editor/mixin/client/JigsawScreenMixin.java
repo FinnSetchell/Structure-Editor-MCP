@@ -1,38 +1,15 @@
 package com.finndog.structure_editor.mixin.client;
 
-import net.minecraft.world.level.block.entity.BlockEntity;
-import net.minecraft.world.level.block.entity.JigsawBlockEntity;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.JigsawBlockEditScreen;
-import org.spongepowered.asm.mixin.Final;
+import net.minecraft.world.level.block.entity.JigsawBlockEntity;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
-import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.gen.Accessor;
 
+// Accessor only. The screen holds its block entity in a private field with no getter, so
+// this exposes it; the external-edit guard itself lives in ScreenGuard via Fabric's
+// ScreenEvents. @Accessor targets are validated at compile time, unlike @Inject strings.
 @Mixin(JigsawBlockEditScreen.class)
-public class JigsawScreenMixin {
-
-    @Shadow @Final private JigsawBlockEntity jigsawEntity;
-    private String se_cachedName;
-
-    @Inject(method = "init", at = @At("TAIL"))
-    private void onInit(CallbackInfo ci) {
-        this.se_cachedName = this.jigsawEntity.getName().toString();
-    }
-
-    @Inject(method = "tick", at = @At("TAIL"))
-    private void onTick(CallbackInfo ci) {
-        Minecraft client = Minecraft.getInstance();
-        if (client.level != null) {
-            BlockEntity current = client.level.getBlockEntity(this.jigsawEntity.getBlockPos());
-            if (current != this.jigsawEntity || !this.jigsawEntity.getName().toString().equals(this.se_cachedName)) {
-                client.setScreenAndShow(null);
-                if (client.player != null) {
-                    client.player.sendOverlayMessage(net.minecraft.network.chat.Component.literal("§cClosed GUI: Block edited externally."));
-                }
-            }
-        }
-    }
+public interface JigsawScreenMixin {
+    @Accessor("jigsawEntity")
+    JigsawBlockEntity structureEditor$getJigsawEntity();
 }
